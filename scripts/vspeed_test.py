@@ -46,6 +46,8 @@ CDS_CLASSPATH_FILE     = Path.home() / "atm10_classpath.txt"   # saved classpath
 MOD_SRC    = PROJECT_ROOT / "build" / "libs" / "vspeed-v2-1.0-SNAPSHOT.jar"
 MOD_DEPLOY = MINECRAFT_DIR / "mods" / "vspeed-v2-1.0-SNAPSHOT.jar"
 
+JFR_OUTPUT = Path.home() / "atm10_startup.jfr"   # Java Flight Recorder output
+
 GAME_TIMEOUT             = 600   # 10 min — max wait for game to load
 DUMP_TIMEOUT             = 900   # 15 min — static dump fallback timeout
 PROFILE_SHUTDOWN_TIMEOUT = 600   # 10 min — graceful JVM exit during Dynamic CDS profiling
@@ -596,6 +598,205 @@ def phase_dump_only():
     return True
 
 
+# ── JFR profiling ─────────────────────────────────────────────────────────────
+
+def _jfr_exe():
+    java_exe = _java_exe_from_cfg()
+    if not java_exe:
+        raise FileNotFoundError("JavaPath missing from instance.cfg")
+    for name in ("jfr.exe", "jfr"):
+        p = Path(java_exe).parent / name
+        if p.exists():
+            return str(p)
+    raise FileNotFoundError(f"jfr tool not found alongside {java_exe}")
+
+
+def analyze_jfr(jfr_path):
+    """Parse a JFR recording and print an actionable startup breakdown."""
+    try:
+        jfr = _jfr_exe()
+    except FileNotFoundError as e:
+        log(f"  {e}", "r")
+        return
+
+    log("\n" + "─" * 58, "c")
+    log("  JFR ANALYSIS", "c")
+    log("─" * 58, "c")
+
+    # ── 1. GC pauses ─────────────────────────────────────────────────────────
+    log("\n  [GC Pauses]", "c")
+    r = subprocess.run(
+        [jfr, "print", "--events", "jdk.GarbageCollection", str(jfr_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    gc_pauses = [float(m.group(1))
+                 for line in r.stdout.splitlines()
+                 for m in [re.search(r'duration\s*=\s*([\d.]+)\s*ms', line)] if m]
+    if gc_pauses:
+        total_gc_ms = sum(gc_pauses)
+        log(f"  Count : {len(gc_pauses)}", "w")
+        log(f"  Total : {total_gc_ms / 1000:.2f} s", "w")
+        log(f"  Max   : {max(gc_pauses):.0f} ms", "w")
+        if total_gc_ms > 5000:
+            log("  ⚠  GC is significant — G1GC tuning will reduce pauses", "y")
+        else:
+            log("  ✓  GC not a bottleneck", "g")
+    else:
+        log("  No GC events found (or couldn't parse)", "y")
+
+    # ── 2. Class loading breakdown ────────────────────────────────────────────
+    log("\n  [Class Loading — top packages]", "c")
+    pkg_counts: dict[str, int] = {}
+    total_classes = 0
+    proc = subprocess.Popen(
+        [jfr, "print", "--events", "jdk.ClassLoad", str(jfr_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+    )
+    for line in proc.stdout:
+        m = re.search(r'loadedClass\s*=\s*([\w$./\[\]]+)', line)
+        if m:
+            cls = m.group(1).replace("/", ".")
+            total_classes += 1
+            parts = cls.split(".")
+            # group by first 2 segments (e.g. "net.minecraft", "com.simibubi")
+            pkg = ".".join(parts[:2]) if len(parts) >= 2 else parts[0]
+            pkg_counts[pkg] = pkg_counts.get(pkg, 0) + 1
+    proc.wait()
+
+    log(f"  Total loaded : {total_classes:,}", "w")
+    if pkg_counts:
+        top = sorted(pkg_counts.items(), key=lambda x: -x[1])[:20]
+        max_count = top[0][1] if top else 1
+        for pkg, count in top:
+            bar = "█" * max(1, round(count / max_count * 30))
+            log(f"  {pkg:<38} {count:>6}  {bar}", "w")
+
+    # ── 3. CPU load ───────────────────────────────────────────────────────────
+    log("\n  [CPU Load during startup]", "c")
+    r = subprocess.run(
+        [jfr, "print", "--events", "jdk.CPULoad", str(jfr_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    cpu_vals = [float(m.group(1)) * 100
+                for line in r.stdout.splitlines()
+                for m in [re.search(r'jvmUser\s*=\s*([\d.]+)', line)] if m]
+    if cpu_vals:
+        avg_cpu = sum(cpu_vals) / len(cpu_vals)
+        max_cpu = max(cpu_vals)
+        log(f"  Avg JVM CPU : {avg_cpu:.1f}%", "w")
+        log(f"  Max JVM CPU : {max_cpu:.1f}%", "w")
+        if avg_cpu > 60:
+            log("  → CPU-bound startup: class init/JIT dominant", "y")
+            log("    Best next step: JDK 24 + Project Leyden (AOT class linking)", "y")
+        else:
+            log("  → I/O-bound startup: disk reads dominant", "y")
+            log("    Best next step: RAM disk or prefetch script", "y")
+
+    # ── 4. Thread contention ──────────────────────────────────────────────────
+    log("\n  [Monitor Waits > 10ms]", "c")
+    r = subprocess.run(
+        [jfr, "print", "--events", "jdk.JavaMonitorWait", str(jfr_path)],
+        capture_output=True, text=True, timeout=60,
+    )
+    long_waits = [float(m.group(1))
+                  for line in r.stdout.splitlines()
+                  for m in [re.search(r'duration\s*=\s*([\d.]+)\s*ms', line)] if m
+                  if float(m.group(1)) > 10]
+    if long_waits:
+        log(f"  {len(long_waits)} waits > 10ms  (total {sum(long_waits) / 1000:.1f} s)", "y")
+        if sum(long_waits) > 5000:
+            log("  ⚠  Heavy thread contention — sequential bottleneck in mod init", "r")
+    else:
+        log("  ✓  No heavy contention", "g")
+
+    # ── 5. Open in JMC ────────────────────────────────────────────────────────
+    java_exe = _java_exe_from_cfg()
+    jmc = Path(java_exe).parent / "jmc.exe" if java_exe else None
+    log(f"\n  JFR file saved: {jfr_path}", "g")
+    if jmc and jmc.exists():
+        log(f"  Open in JMC  : {jmc}", "w")
+    else:
+        log("  Open in JMC  : https://www.oracle.com/java/technologies/jdk-mission-control.html", "w")
+
+
+def phase_jfr():
+    """
+    Launch game with Java Flight Recorder (profile settings), dump JFR via jcmd
+    after the game finishes loading, then kill the JVM and analyze.
+    """
+    JFR_DUMP_TIMEOUT = 120
+
+    if JFR_OUTPUT.exists():
+        try:
+            os.chmod(JFR_OUTPUT, stat.S_IWRITE | stat.S_IREAD)
+            JFR_OUTPUT.unlink()
+        except OSError:
+            pass
+
+    log("\n" + "─" * 58, "c")
+    log("  JFR PROFILING  (startup breakdown)", "c")
+    log("─" * 58, "c")
+    log(f"  Output: {JFR_OUTPUT}")
+
+    jfr_path_arg = str(JFR_OUTPUT).replace("\\", "/")
+
+    # Use CDS archive if available so profiling reflects real-world conditions
+    jvm_args = [
+        f"-XX:StartFlightRecording=name=startup,settings=profile,dumponexit=true,filename={jfr_path_arg}",
+    ]
+    if CDS_ARCHIVE.exists():
+        jvm_args += ["-Xshare:auto", f"-XX:SharedArchiveFile={str(CDS_ARCHIVE).replace(chr(92), '/')}"]
+        log("  (using existing CDS archive — profiling reflects optimised launch)", "y")
+    else:
+        jvm_args.append("-Xshare:off")
+        log("  (no CDS archive — profiling reflects baseline launch)", "y")
+
+    before_run(jvm_args)
+    log("\n  Launching game with JFR recording...")
+    log("  Do NOT close manually — Python will dump and kill after load.", "y")
+    launch_prism()
+
+    t, mon = wait_for_signal(GAME_TIMEOUT)
+    after_run()
+
+    if t < 0:
+        log("  Game never signalled.", "r")
+        kill_java_and_prism()
+        return False
+
+    log(f"  Game loaded in {t}s.", "g")
+
+    # Dump JFR while JVM is alive (more complete than dumponexit on force-kill)
+    pid = _get_minecraft_pid()
+    if pid:
+        java_exe = _java_exe_from_cfg()
+        try:
+            jcmd_exe = _jcmd_from_java(java_exe)
+            log("\n  Dumping JFR via jcmd...", "c")
+            r = subprocess.run(
+                [jcmd_exe, str(pid), "JFR.dump",
+                 "name=startup", f"filename={jfr_path_arg}"],
+                capture_output=True, text=True, timeout=JFR_DUMP_TIMEOUT,
+            )
+            out = (r.stdout + r.stderr).strip()
+            if out:
+                log(f"  {out}", "g" if r.returncode == 0 else "y")
+        except Exception as e:
+            log(f"  jcmd JFR.dump failed ({e}) — relying on dumponexit", "y")
+
+    kill_java_and_prism()
+
+    if not JFR_OUTPUT.exists() or JFR_OUTPUT.stat().st_size < 1024:
+        log("  JFR file not created or empty.", "r")
+        return False
+
+    size_mb = JFR_OUTPUT.stat().st_size / (1024 * 1024)
+    log(f"\n  JFR file: {size_mb:.1f} MB  ✓", "g")
+
+    analyze_jfr(JFR_OUTPUT)
+    return True
+
+
 # ── Phases 1 & 2: Timed runs ─────────────────────────────────────────────────
 
 def phase_timed(label, jvm_args):
@@ -649,6 +850,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--reprofile",  action="store_true", help="Delete archive and redo profiling")
     parser.add_argument("--skip-build", action="store_true", help="Skip Gradle build")
+    parser.add_argument("--jfr",        action="store_true", help="Run JFR startup profiling only")
     args = parser.parse_args()
 
     log("=" * 58, "c")
@@ -661,6 +863,11 @@ def main():
     if not args.skip_build:
         build()
     deploy()
+
+    # ── JFR-only mode ─────────────────────────────────────────────────────────
+    if args.jfr:
+        phase_jfr()
+        return
 
     # Phase 0
     if args.reprofile:
