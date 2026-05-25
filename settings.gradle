@@ -1,0 +1,2 @@
+rootProject.name = 'vspeed-v2'
+include 'vspeed-agent'

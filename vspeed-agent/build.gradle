@@ -1,0 +1,32 @@
+plugins {
+    id 'java'
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'dev.vspeed'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'net.bytebuddy:byte-buddy:1.14.12'
+    implementation 'net.bytebuddy:byte-buddy-agent:1.14.12'
+}
+
+shadowJar {
+    archiveClassifier.set('')
+    archiveFileName.set('vspeed-agent.jar')
+    manifest {
+        attributes(
+            'Premain-Class': 'dev.vspeed.agent.VSpeedAgent',
+            'Can-Redefine-Classes': 'true',
+            'Can-Retransform-Classes': 'true'
+        )
+    }
+}
+
+// Заменяем стандартный jar на shadowJar
+build.dependsOn shadowJar
+jar.enabled = false

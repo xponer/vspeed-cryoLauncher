@@ -1,0 +1,32 @@
+# ── Gradle ────────────────────────────────────────────────────────────────────
+.gradle/
+gradle-temp/
+gradle-8.8-all.zip
+build/
+vspeed-loader/build/
+vspeed-agent/build/
+
+# ── NeoForge dev run outputs ──────────────────────────────────────────────────
+runs/
+bin/
+
+# ── JVM crash / heap dumps ────────────────────────────────────────────────────
+*.hprof
+hs_err_pid*.log
+
+# ── PrismLauncher logs ────────────────────────────────────────────────────────
+prism_error.log
+prism_launch.log
+*.log
+
+# ── CDS archive (large, machine-specific) ─────────────────────────────────────
+*.jsa
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.iml
