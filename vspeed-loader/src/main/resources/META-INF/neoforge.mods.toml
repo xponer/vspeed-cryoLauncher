@@ -5,9 +5,9 @@ license="MIT"
 [[mods]]
 modId="vspeed"
 version="1.0"
-displayName="Cryo V2"
-authors="Gemini"
-description="Optimization Mod for ATM10"
+displayName="VSpeed"
+authors="xponer"
+description="Dynamic AppCDS startup optimizer for NeoForge 1.21.1 modpacks. Signals game load completion for benchmark/profiling tooling."
 
 [[mixins]]
 config="vspeed.mixins.json"
