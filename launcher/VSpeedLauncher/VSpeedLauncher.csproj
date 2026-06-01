@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RootNamespace>VSpeedLauncher</RootNamespace>
+    <AssemblyName>VSpeedLauncher</AssemblyName>
+
+    <!-- App version — bump for each release; Velopack uses it as the SemVer. -->
+    <Version>1.0.0</Version>
+    <!-- Velopack must run before WPF, so we use an explicit Program.Main. -->
+    <StartupObject>VSpeedLauncher.Program</StartupObject>
+
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CmlLib.Core.Installer.Forge" Version="1.1.1" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
+    <!-- Standalone Minecraft launcher engine (replaces the PrismLauncher dependency) -->
+    <PackageReference Include="CmlLib.Core" Version="4.0.6" />
+    <PackageReference Include="CmlLib.Core.Auth.Microsoft" Version="3.3.1" />
+    <PackageReference Include="CmlLib.Core.Installer.NeoForge" Version="4.0.0" />
+    <!-- Windows DPAPI for encrypting the Microsoft account tokens at rest -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <PackageReference Include="Velopack" Version="1.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- React UI files — served at https://cryo.local/ via virtual host mapping -->
+    <Content Include="WebUI\**\*" Exclude="WebUI\screenshots\**">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <!-- Use an explicit Program.Main (Velopack runs first), so App.xaml is a Page,
+       not the auto-generated ApplicationDefinition (which would emit its own Main). -->
+  <ItemGroup>
+    <ApplicationDefinition Remove="App.xaml" />
+    <Page Include="App.xaml" />
+  </ItemGroup>
+
+</Project>

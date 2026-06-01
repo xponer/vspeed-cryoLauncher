@@ -23,6 +23,10 @@ public class VSpeedMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+        // JSON-reload cache is always active — it's our persistent startup accelerator.
+        // It has no user-visible side effects and is safe to enable unconditionally.
+        if (mixinClassName.endsWith("JsonReloadCacheMixin")) return true;
+
         String opt = System.getProperty(OPT_PROP, "false");
         String prof = System.getProperty(PROF_PROP, "false");
 

@@ -1,0 +1,24 @@
+<Window x:Class="VSpeedLauncher.UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Cryo"
+        Width="1280" Height="820"
+        MinWidth="900" MinHeight="600"
+        WindowStartupLocation="CenterScreen"
+        WindowStyle="None"
+        Background="#080B10"
+        Closing="OnClosing">
+
+  <WindowChrome.WindowChrome>
+    <WindowChrome CaptionHeight="44"
+                  ResizeBorderThickness="5"
+                  UseAeroCaptionButtons="False"
+                  NonClientFrameEdges="None"
+                  GlassFrameThickness="0,0,0,0" />
+  </WindowChrome.WindowChrome>
+
+  <Grid>
+    <wv2:WebView2 x:Name="WebView" />
+  </Grid>
+</Window>

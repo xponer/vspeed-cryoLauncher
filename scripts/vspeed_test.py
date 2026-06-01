@@ -48,6 +48,26 @@ MOD_DEPLOY = MINECRAFT_DIR / "mods" / "vspeed-v2-1.0-SNAPSHOT.jar"
 
 JFR_OUTPUT = Path.home() / "atm10_startup.jfr"   # Java Flight Recorder output
 
+# JEP 483 AOT (JDK 24+) — Ahead-of-Time Class Loading & Linking
+# Workflow: record → create → run  (3 steps, like CDS but handles custom classloaders)
+AOT_CONFIG = Path.home() / "atm10_aot.aotconf"  # written by -XX:AOTMode=record
+AOT_CACHE  = Path.home() / "atm10_aot.aot"       # written by -XX:AOTMode=create
+
+# G1GC tuning — for 12 GB heap, heavy-allocation startup (481 mods)
+# JFR showed 15 pauses / 4.04s total / 959ms max during ATM10 startup.
+# Root cause: default IHOP=45% lets heap fill up before concurrent GC starts → Full GC.
+#
+# Only product-tier flags here — G1NewSizePercent / G1MaxNewSizePercent / SurvivorRatio
+# are diagnostic flags in Oracle JDK 21 and require -XX:+UnlockDiagnosticVMOptions;
+# without it the JVM prints "Unrecognized VM option" and exits before loading anything.
+G1GC_FLAGS = [
+    "-XX:MaxGCPauseMillis=200",               # G1 targets ≤200ms stop-the-world pauses
+    "-XX:G1HeapRegionSize=16m",               # 16m regions for 12 GB heap (default 8m)
+    "-XX:InitiatingHeapOccupancyPercent=15",  # start concurrent GC at 15% full (default 45%)
+]
+
+PRISM_LOG_DIR = INSTANCE_ROOT.parent.parent / "logs"   # PrismLauncher session logs
+
 GAME_TIMEOUT             = 600   # 10 min — max wait for game to load
 DUMP_TIMEOUT             = 900   # 15 min — static dump fallback timeout
 PROFILE_SHUTDOWN_TIMEOUT = 600   # 10 min — graceful JVM exit during Dynamic CDS profiling
@@ -271,12 +291,20 @@ def _log_monitor(stop, results):
     while not stop.is_set():
         if LATEST_LOG.exists():
             try:
+                # If the file shrank (Minecraft recreated it for a new run), reset.
+                cur_size = LATEST_LOG.stat().st_size
+                if cur_size < pos:
+                    pos = 0
                 with open(LATEST_LOG, "r", encoding="utf-8", errors="ignore") as f:
                     f.seek(pos)
                     for line in f:
                         m = re.search(r"STARTUP_TIME_SECONDS: (\d+)", line)
                         if m:
                             results["log_time"] = int(m.group(1))
+                        # Phase timing: "[vspeed-Metrics] PHASE_COMMON_SETUP:  8423 ms"
+                        mp = re.search(r"PHASE_(\w+):\s+(\d+)\s*ms", line)
+                        if mp:
+                            results.setdefault("phases", {})[mp.group(1)] = int(mp.group(2))
                         if any(t in line for t in ("[VSpeed", "[vspeed")):
                             results.setdefault("output", []).append(line.strip())
                     pos = f.tell()
@@ -284,18 +312,73 @@ def _log_monitor(stop, results):
                 pass
         time.sleep(0.3)
 
+def _show_crash_info(mon):
+    """Extract and display the crash reason from Minecraft / PrismLauncher logs."""
+    time.sleep(0.5)   # let the log file finish flushing
+
+    def _print_excerpt(header, lines):
+        log(f"\n  ── {header} {'─'*(46-len(header))}", "r")
+        for ln in lines[:15]:
+            log(f"    {ln.rstrip()}", "r")
+
+    # 1. Check Minecraft latest.log — present if FML got far enough to open it
+    if LATEST_LOG.exists() and LATEST_LOG.stat().st_size > 0:
+        try:
+            all_lines = LATEST_LOG.read_text(encoding="utf-8", errors="ignore").splitlines()
+            exc_lines = []
+            capturing = False
+            for ln in all_lines:
+                if not capturing and any(k in ln for k in
+                        ("Exception", "FATAL", "Caused by:", "ERROR in thread")):
+                    capturing = True
+                if capturing:
+                    exc_lines.append(ln)
+                    if len(exc_lines) >= 15:
+                        break
+            if exc_lines:
+                _print_excerpt("latest.log", exc_lines)
+                return
+        except OSError:
+            pass
+
+    # 2. Fall back to most-recent PrismLauncher-N.log
+    if PRISM_LOG_DIR.exists():
+        logs = sorted(PRISM_LOG_DIR.glob("PrismLauncher-*.log"),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        for plog in logs[:1]:
+            try:
+                all_lines = plog.read_text(encoding="utf-8", errors="ignore").splitlines()
+                err_lines = [ln for ln in all_lines if any(k in ln for k in (
+                    "Exception", "Caused by:", "ERROR", "Exiting with",
+                    "InaccessibleObjectException", "IllegalStateException",
+                    "exit code",
+                ))]
+                if err_lines:
+                    _print_excerpt(plog.name, err_lines[-15:])
+            except OSError:
+                pass
+
+
 def wait_for_signal(timeout_secs):
-    """Returns (startup_seconds, monitor_results). time=-1 on timeout."""
+    """Returns (startup_seconds, monitor_results).
+    time = -1  → timeout
+    time = -2  → JVM crashed before writing the signal file
+    """
     results = {}
     stop = threading.Event()
     mon = threading.Thread(target=_log_monitor, args=(stop, results), daemon=True)
     mon.start()
     start = time.time()
     t = -1
+    mc_pid  = None
+    mc_proc = None
+
     try:
         while True:
             elapsed = int(time.time() - start)
             progress(f"⏱  {elapsed}s — waiting for game to load...")
+
+            # ── Success: signal file or log message ──────────────────────────
             if SIGNAL_FILE.exists():
                 try:
                     t = int(SIGNAL_FILE.read_text().strip())
@@ -307,10 +390,38 @@ def wait_for_signal(timeout_secs):
                 t = results["log_time"]
                 print()
                 break
+
+            # ── Crash detection ───────────────────────────────────────────────
+            # Step 1: latch onto the JVM PID once it appears
+            if mc_pid is None:
+                new_pid = _get_minecraft_pid()
+                if new_pid:
+                    mc_pid = new_pid
+                    try:
+                        mc_proc = psutil.Process(mc_pid)
+                    except psutil.NoSuchProcess:
+                        mc_pid = None   # gone already — will re-detect next loop
+
+            # Step 2: check if the latched process is still alive
+            elif mc_proc is not None:
+                try:
+                    alive = mc_proc.is_running() and mc_proc.status() != psutil.STATUS_ZOMBIE
+                except psutil.NoSuchProcess:
+                    alive = False
+
+                if not alive:
+                    print()
+                    results["crashed"] = True
+                    results["crash_pid"] = mc_pid
+                    t = -2
+                    break
+
+            # ── Timeout ───────────────────────────────────────────────────────
             if elapsed >= timeout_secs:
                 print()
                 log("  Timed out.", "r")
                 break
+
             time.sleep(0.5)
     finally:
         stop.set()
@@ -664,7 +775,10 @@ def analyze_jfr(jfr_path):
     proc.wait()
 
     log(f"  Total loaded : {total_classes:,}", "w")
-    if pkg_counts:
+    if total_classes == 0:
+        log("  ✓  0 ClassLoad events — AppCDS is loading classes from the archive", "g")
+        log("     (JVM skips ClassLoad instrumentation for CDS-mapped classes)", "w")
+    elif pkg_counts:
         top = sorted(pkg_counts.items(), key=lambda x: -x[1])[:20]
         max_count = top[0][1] if top else 1
         for pkg, count in top:
@@ -677,7 +791,9 @@ def analyze_jfr(jfr_path):
         [jfr, "print", "--events", "jdk.CPULoad", str(jfr_path)],
         capture_output=True, text=True, timeout=60,
     )
-    cpu_vals = [float(m.group(1)) * 100
+    # jfr print outputs CPU values already in % form (e.g. "jvmUser = 22.39 %")
+    # Do NOT multiply by 100 — the regex captures the numeric part only.
+    cpu_vals = [float(m.group(1))
                 for line in r.stdout.splitlines()
                 for m in [re.search(r'jvmUser\s*=\s*([\d.]+)', line)] if m]
     if cpu_vals:
@@ -721,9 +837,11 @@ def analyze_jfr(jfr_path):
 
 def phase_jfr():
     """
-    Launch game with Java Flight Recorder (profile settings), dump JFR via jcmd
-    after the game finishes loading, then kill the JVM and analyze.
+    Attach JFR via jcmd shortly after game launch (avoids JVM-arg parsing issues
+    with -XX:StartFlightRecording's commas/equals signs in PrismLauncher).
+    Misses only the first ~3s of startup; captures all of mod init + resource load.
     """
+    JFR_ATTACH_DELAY = 3    # seconds after launch before jcmd JFR.start
     JFR_DUMP_TIMEOUT = 120
 
     if JFR_OUTPUT.exists():
@@ -738,24 +856,48 @@ def phase_jfr():
     log("─" * 58, "c")
     log(f"  Output: {JFR_OUTPUT}")
 
-    jfr_path_arg = str(JFR_OUTPUT).replace("\\", "/")
-
     # Use CDS archive if available so profiling reflects real-world conditions
-    jvm_args = [
-        f"-XX:StartFlightRecording=name=startup,settings=profile,dumponexit=true,filename={jfr_path_arg}",
-    ]
+    jvm_args = []
     if CDS_ARCHIVE.exists():
         jvm_args += ["-Xshare:auto", f"-XX:SharedArchiveFile={str(CDS_ARCHIVE).replace(chr(92), '/')}"]
-        log("  (using existing CDS archive — profiling reflects optimised launch)", "y")
+        log("  (CDS archive active — profiling reflects optimised launch)", "y")
     else:
         jvm_args.append("-Xshare:off")
         log("  (no CDS archive — profiling reflects baseline launch)", "y")
 
     before_run(jvm_args)
-    log("\n  Launching game with JFR recording...")
-    log("  Do NOT close manually — Python will dump and kill after load.", "y")
+    log("\n  Launching game...")
     launch_prism()
 
+    # Poll for JVM PID — PrismLauncher takes a variable amount of time to spawn javaw
+    java_exe = _java_exe_from_cfg()
+    jcmd_exe = None
+    pid = None
+    try:
+        jcmd_exe = _jcmd_from_java(java_exe)
+    except FileNotFoundError as e:
+        log(f"  {e}", "r")
+
+    if jcmd_exe:
+        log("  Polling for JVM PID (up to 60s)...", "y")
+        for _ in range(120):          # 120 × 0.5s = 60s max
+            pid = _get_minecraft_pid()
+            if pid:
+                break
+            time.sleep(0.5)
+
+        if pid:
+            log(f"  JVM found: PID {pid}", "g")
+            r = subprocess.run(
+                [jcmd_exe, str(pid), "JFR.start", "name=startup", "settings=profile"],
+                capture_output=True, text=True, timeout=30,
+            )
+            out = (r.stdout + r.stderr).strip()
+            log(f"  JFR.start → {out}", "g" if "Started" in out else "y")
+        else:
+            log("  JVM not found after 60s.", "r")
+
+    # Wait for game to finish loading
     t, mon = wait_for_signal(GAME_TIMEOUT)
     after_run()
 
@@ -766,23 +908,17 @@ def phase_jfr():
 
     log(f"  Game loaded in {t}s.", "g")
 
-    # Dump JFR while JVM is alive (more complete than dumponexit on force-kill)
-    pid = _get_minecraft_pid()
-    if pid:
-        java_exe = _java_exe_from_cfg()
-        try:
-            jcmd_exe = _jcmd_from_java(java_exe)
-            log("\n  Dumping JFR via jcmd...", "c")
-            r = subprocess.run(
-                [jcmd_exe, str(pid), "JFR.dump",
-                 "name=startup", f"filename={jfr_path_arg}"],
-                capture_output=True, text=True, timeout=JFR_DUMP_TIMEOUT,
-            )
-            out = (r.stdout + r.stderr).strip()
-            if out:
-                log(f"  {out}", "g" if r.returncode == 0 else "y")
-        except Exception as e:
-            log(f"  jcmd JFR.dump failed ({e}) — relying on dumponexit", "y")
+    # Dump JFR
+    if pid and jcmd_exe:
+        jfr_path_arg = str(JFR_OUTPUT).replace("\\", "/")
+        log("\n  Dumping JFR...", "c")
+        r = subprocess.run(
+            [jcmd_exe, str(pid), "JFR.dump", "name=startup", f"filename={jfr_path_arg}"],
+            capture_output=True, text=True, timeout=JFR_DUMP_TIMEOUT,
+        )
+        out = (r.stdout + r.stderr).strip()
+        if out:
+            log(f"  {out}", "g" if r.returncode == 0 else "y")
 
     kill_java_and_prism()
 
@@ -794,6 +930,202 @@ def phase_jfr():
     log(f"\n  JFR file: {size_mb:.1f} MB  ✓", "g")
 
     analyze_jfr(JFR_OUTPUT)
+    return True
+
+
+# ── OS cache prefetch ─────────────────────────────────────────────────────────
+
+def prefetch_to_os_cache():
+    """
+    Read every JAR in mods/ and libraries/ into the Windows OS file cache.
+
+    JFR showed 23.5% avg CPU during a 72s startup — the JVM is blocking on
+    disk reads ~76% of the time.  A single sequential pass through all JARs
+    before launch converts those random-read stalls into OS-cache hits.
+
+    Returns (elapsed_seconds, total_mb).
+    """
+    targets = [MINECRAFT_DIR / "mods", MINECRAFT_DIR / "libraries"]
+    total_bytes = 0
+    total_files = 0
+    t0 = time.time()
+
+    for base in targets:
+        if not base.exists():
+            continue
+        for jar in base.rglob("*.jar"):
+            try:
+                with open(jar, "rb") as fh:
+                    while fh.read(1 << 20):   # 1 MB chunks; GC frees each one
+                        pass
+                total_bytes += jar.stat().st_size
+                total_files += 1
+            except OSError:
+                pass
+            if total_files % 25 == 0:
+                progress(f"  Prefetching... {total_files} JARs  "
+                         f"{total_bytes / (1024 * 1024):.0f} MB")
+
+    elapsed = time.time() - t0
+    print()
+    log(f"  Prefetched {total_files} JARs → {total_bytes / (1024*1024):.0f} MB "
+        f"in {elapsed:.1f}s", "g")
+    return elapsed, total_bytes / (1024 * 1024)
+
+
+# ── JEP 483 AOT (JDK 24+) ────────────────────────────────────────────────────
+
+def phase_aot_profile():
+    """
+    JDK 24+ JEP 483 — Step 1: record AOT configuration.
+
+    Launches the game with -XX:AOTMode=record.  The JVM writes a small
+    metadata file (AOT_CONFIG) that records every class loaded, in order,
+    including classes loaded by FML's TransformingClassLoader and Mixin.
+    Unlike -XX:ArchiveClassesAtExit, this file is written at JVM shutdown
+    and is just metadata (a few MB), so the shutdown-time crash that
+    plagued dynamic CDS doesn't apply here.
+
+    After the game signals load-complete we send a graceful terminate
+    (not halt) so the JVM runs shutdown hooks and flushes the aotconf.
+    """
+    AOT_GRACEFUL_TIMEOUT = 60   # seconds to wait for graceful exit after terminate
+
+    log("\n" + "─" * 58, "c")
+    log("  PHASE AOT RECORD  (JDK 24+ JEP 483 — step 1 of 2)", "c")
+    log("─" * 58, "c")
+    log(f"  AOT config: {AOT_CONFIG}", "w")
+
+    config_arg = str(AOT_CONFIG).replace("\\", "/")
+
+    # NOTE: AOTConfiguration is mutually exclusive with -Xshare:* and SharedArchiveFile.
+    # The JEP 483 AOT cache supersedes CDS — do NOT combine them.
+    before_run([
+        "-XX:AOTMode=record",
+        f"-XX:AOTConfiguration={config_arg}",
+    ])
+
+    log("\n  Launching Prism → ATM10 (AOT recording)...", "c")
+    log("  Game will load normally. Python sends graceful shutdown after signal.", "y")
+    launch_prism()
+
+    t, mon = wait_for_signal(GAME_TIMEOUT)
+    after_run()   # restore instance.cfg; JVM still running
+
+    if t < 0:
+        log("  Game never signalled.", "r")
+        kill_java_and_prism()
+        return False
+
+    log(f"  Game loaded in {t}s. Sending graceful terminate for AOT flush...", "g")
+
+    # Use terminate() (WM_CLOSE / SIGTERM) not kill() — JVM must run shutdown
+    # hooks to flush the aotconf file.
+    terminated = set()
+    for proc in psutil.process_iter(["pid", "name"]):
+        try:
+            n = proc.info["name"].lower()
+            if "javaw" in n or "prism" in n:
+                proc.terminate()
+                terminated.add(f"{proc.info['name']}:{proc.info['pid']}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if terminated:
+        log(f"  Terminated: {', '.join(sorted(terminated))}", "y")
+
+    # Wait for graceful exit (aotconf flush)
+    log(f"  Waiting up to {AOT_GRACEFUL_TIMEOUT}s for JVM to write aotconf...", "y")
+    clean = wait_for_java_exit(AOT_GRACEFUL_TIMEOUT)
+    if not clean:
+        log("  JVM did not exit gracefully — force killing.", "y")
+        kill_java_and_prism()
+
+    if not AOT_CONFIG.exists():
+        log("  AOT config NOT created.", "r")
+        log("  → Is this JDK 24?  -XX:AOTMode=record requires JDK 24+.", "r")
+        log("    Check: PrismLauncher → ATM10 instance → Java tab → Java path", "y")
+        return False
+
+    size_kb = AOT_CONFIG.stat().st_size // 1024
+    log(f"  AOT config: {size_kb} KB  ✓", "g")
+    return True
+
+
+def phase_aot_create():
+    """
+    JDK 24+ JEP 483 — Step 2: create AOT cache via PrismLauncher.
+
+    Launches with -XX:AOTMode=create.  The JVM loads every class recorded
+    in the aotconf (including FML/Mixin-transformed ones), pre-links them,
+    writes the AOT cache, then exits WITHOUT starting the game or calling
+    main().  Takes 30–120 s depending on class count.
+    """
+    AOT_CREATE_TIMEOUT = 300   # 5 min max
+
+    log("\n" + "─" * 58, "c")
+    log("  PHASE AOT CREATE  (JDK 24+ JEP 483 — step 2 of 2)", "c")
+    log("─" * 58, "c")
+    log(f"  AOT cache:  {AOT_CACHE}", "w")
+
+    if not AOT_CONFIG.exists():
+        log("  AOT config missing — run without --skip-aot-profile first.", "r")
+        return False
+
+    config_arg = str(AOT_CONFIG).replace("\\", "/")
+    cache_arg  = str(AOT_CACHE).replace("\\", "/")
+
+    # NOTE: AOTConfiguration is mutually exclusive with -Xshare:* and SharedArchiveFile.
+    before_run([
+        "-XX:AOTMode=create",
+        f"-XX:AOTConfiguration={config_arg}",
+        f"-XX:AOTCache={cache_arg}",
+    ])
+
+    log("  Launching Prism → ATM10 (AOT create mode)...", "c")
+    log("  JVM will load all recorded classes, write the cache, then exit.", "y")
+    launch_prism()
+
+    # Phase 1: wait for javaw to APPEAR (PrismLauncher takes several seconds to spawn it)
+    log("  Waiting for JVM to start (up to 60s)...", "y")
+    pid = None
+    for _ in range(120):      # 120 × 0.5s = 60s max
+        pid = _get_minecraft_pid()
+        if pid:
+            break
+        time.sleep(0.5)
+
+    if not pid:
+        log("  JVM never started — check PrismLauncher logs.", "r")
+        after_run()
+        return False
+
+    log(f"  JVM started (PID {pid}).  Waiting up to {AOT_CREATE_TIMEOUT}s "
+        f"for cache write + exit...", "g")
+
+    # Phase 2: wait for javaw to EXIT (JVM writes cache then exits automatically)
+    clean = wait_for_java_exit(AOT_CREATE_TIMEOUT)
+    after_run()
+
+    if not clean:
+        log(f"  Timed out after {AOT_CREATE_TIMEOUT}s.", "r")
+        kill_java_and_prism()
+        return False
+
+    if not AOT_CACHE.exists():
+        log("  AOT cache NOT created.", "r")
+        log("  Possible causes:", "r")
+        log("    • -XX:AOTMode=create requires JDK 24+ (not JDK 21)", "r")
+        log("    • aotconf was recorded with a different JDK", "r")
+        log("    • classpath mismatch (re-run --reprofile --aot)", "r")
+        return False
+
+    size_mb = AOT_CACHE.stat().st_size / (1024 * 1024)
+    if size_mb < 1:
+        log(f"  AOT cache too small ({size_mb:.1f} MB) — create likely failed.", "r")
+        AOT_CACHE.unlink()
+        return False
+
+    log(f"  AOT cache: {size_mb:.0f} MB  ✓", "g")
     return True
 
 
@@ -813,17 +1145,36 @@ def phase_timed(label, jvm_args):
     kill_java_and_prism()
     after_run()
 
-    if t > 0:
+    if t == -2:
+        log("  CRASHED — JVM exited before game finished loading", "r")
+        _show_crash_info(mon)
+    elif t > 0:
         log(f"  Result: {t}s", "g")
     else:
         log("  FAILED / timed out", "r")
+
+    # ── Phase timing breakdown ────────────────────────────────────────────────
+    if t > 0 and mon.get("phases"):
+        phases = mon["phases"]
+        log("\n  NeoForge phase timing (wall-clock, worst mod per phase):", "c")
+        phase_order = [("COMMON_SETUP", "FMLCommonSetupEvent"),
+                       ("CLIENT_SETUP", "FMLClientSetupEvent")]
+        for key, name in phase_order:
+            ms = phases.get(key)
+            if ms is not None:
+                bar = "█" * min(40, ms // 250)
+                log(f"    {name:25s} {ms:5d} ms  {bar}", "c" if ms < 5000 else "r")
+        # Any unexpected phases
+        for key, ms in phases.items():
+            if key not in ("COMMON_SETUP", "CLIENT_SETUP"):
+                log(f"    {key:25s} {ms:5d} ms", "c")
 
     if mon.get("output"):
         log("\n  Mod output:", "y")
         for line in mon["output"][-10:]:
             log(f"    {line}", "y")
 
-    return {"label": label, "time": t}
+    return {"label": label, "time": t, "phases": mon.get("phases", {})}
 
 # ── Build & deploy ────────────────────────────────────────────────────────────
 
@@ -851,6 +1202,10 @@ def main():
     parser.add_argument("--reprofile",  action="store_true", help="Delete archive and redo profiling")
     parser.add_argument("--skip-build", action="store_true", help="Skip Gradle build")
     parser.add_argument("--jfr",        action="store_true", help="Run JFR startup profiling only")
+    parser.add_argument("--extended",   action="store_true",
+                        help="Run extra phases: G1GC tuning, OS prefetch, and their combination")
+    parser.add_argument("--aot",        action="store_true",
+                        help="Run JEP 483 AOT pipeline: record → create → benchmark (JDK 24+)")
     args = parser.parse_args()
 
     log("=" * 58, "c")
@@ -869,10 +1224,86 @@ def main():
         phase_jfr()
         return
 
+    # ── AOT mode (JDK 24+ JEP 483) ────────────────────────────────────────────
+    if args.aot:
+        if AOT_CONFIG.exists() and AOT_CACHE.exists():
+            size_mb = AOT_CACHE.stat().st_size / (1024 * 1024)
+            log(f"\n[AOT] Cache found: {size_mb:.0f} MB — skipping profiling.", "g")
+            log(  "      Use --reprofile to rebuild.", "w")
+        elif AOT_CONFIG.exists() and not AOT_CACHE.exists():
+            log("\n[AOT] Config found but cache missing — retrying create step...", "y")
+            if not phase_aot_create():
+                log("\n[AOT] Create failed. Run with --reprofile --aot to start over.", "r")
+                sys.exit(1)
+            log("\n[Cooldown] 10 seconds...", "y")
+            time.sleep(10)
+        else:
+            log("\n[AOT] No AOT files — running full pipeline (record → create)...", "y")
+            if not phase_aot_profile():
+                log("\n[AOT] Record failed.  Is this JDK 24?", "r"); sys.exit(1)
+            log("\n[Cooldown] 10 seconds...", "y")
+            time.sleep(10)
+            if not phase_aot_create():
+                log("\n[AOT] Create failed.", "r"); sys.exit(1)
+            log("\n[Cooldown] 10 seconds...", "y")
+            time.sleep(10)
+
+        # Benchmark: CDS baseline vs JEP 483 AOT cache
+        # The AOT cache is a superset of CDS — it REPLACES -Xshare:auto + SharedArchiveFile.
+        archive_path = str(CDS_ARCHIVE).replace("\\", "/")
+        aot_path     = str(AOT_CACHE).replace("\\", "/")
+
+        log("\n[AOT Benchmark] Running CDS baseline (JDK 24, no AOT cache)...", "c")
+        cds_run = phase_timed(
+            "CDS only (baseline for AOT)",
+            ["-Xshare:auto", f"-XX:SharedArchiveFile={archive_path}",
+             "-Dvspeed.benchmark=true"],
+        )
+
+        log("\n[Cooldown] 10 seconds...", "y")
+        time.sleep(10)
+
+        log("\n[AOT Benchmark] Running JEP 483 AOT cache (replaces CDS)...", "c")
+        aot_run = phase_timed(
+            "JEP 483 AOT cache (no -Xshare flags)",
+            [
+                f"-XX:AOTCache={aot_path}",
+                # AOT pre-initializes UnionFileSystem before ForgeWrapper runs its
+                # reflective module-open setup.  Passing this explicitly at JVM
+                # startup ensures java.lang.invoke is accessible before <clinit>.
+                "--add-opens=java.base/java.lang.invoke=ALL-UNNAMED",
+                "-Dvspeed.benchmark=true",
+            ],
+        )
+
+        bt = cds_run["time"]
+        at = aot_run["time"]
+
+        log(f"\n{'='*58}", "c")
+        log("  AOT RESULTS  (JDK 24 + JEP 483)", "c")
+        log(f"{'='*58}", "c")
+        log(f"  {'CDS only':<36}: {bt}s", "w")
+        if at > 0 and bt > 0:
+            diff = bt - at
+            pct  = diff / bt * 100
+            sign = f"-{diff}s ({pct:.1f}% faster)" if diff > 0 else (
+                   f"+{abs(diff)}s ({abs(pct):.1f}% slower)" if diff < 0 else "no change")
+            color = "g" if diff > 0 else ("r" if diff < 0 else "y")
+            log(f"  {'CDS + AOT (JEP 483)':<36}: {at}s   {sign}", color)
+        elif at <= 0:
+            log(f"  {'CDS + AOT (JEP 483)':<36}: FAILED", "r")
+        if AOT_CACHE.exists():
+            log(f"\n  AOT cache : {AOT_CACHE.stat().st_size/(1024*1024):.0f} MB", "w")
+        if CDS_ARCHIVE.exists():
+            log(f"  CDS archive: {CDS_ARCHIVE.stat().st_size/(1024*1024):.0f} MB", "w")
+        log("=" * 58, "c")
+        return
+
     # Phase 0
     if args.reprofile:
         kill_java_and_prism()   # release any file locks before deleting the archive
-        for f in (CDS_ARCHIVE, CDS_CLASSLIST, CDS_CLASSLIST_FILTERED, CDS_CLASSPATH_FILE):
+        for f in (CDS_ARCHIVE, CDS_CLASSLIST, CDS_CLASSLIST_FILTERED, CDS_CLASSPATH_FILE,
+                  AOT_CONFIG, AOT_CACHE):
             if f.exists():
                 log(f"\n[CDS] Removing {f.name}...", "y")
                 try:
@@ -933,6 +1364,51 @@ def main():
         ],
     )
 
+    # ── Extended phases (--extended) ──────────────────────────────────────────
+    gc_phase        = None
+    prefetch_phase  = None
+    combo_phase     = None
+    pre_secs        = 0.0
+    pre_mb          = 0.0
+    pre_secs2       = 0.0
+
+    if args.extended:
+        archive_path = str(CDS_ARCHIVE).replace("\\", "/")
+
+        log("\n[Cooldown] 10 seconds...", "y")
+        time.sleep(10)
+
+        # Phase 4 — AppCDS + G1GC tuning
+        gc_phase = phase_timed(
+            "PHASE 4 — AppCDS + G1GC tuning",
+            ["-Xshare:auto", f"-XX:SharedArchiveFile={archive_path}",
+             "-Dvspeed.benchmark=true"] + G1GC_FLAGS,
+        )
+
+        log("\n[Cooldown] 10 seconds...", "y")
+        time.sleep(10)
+
+        # Phase 5 — AppCDS + Prefetch (warm OS file cache before launch)
+        log("\n[Prefetch] Warming OS file cache...", "c")
+        pre_secs, pre_mb = prefetch_to_os_cache()
+        prefetch_phase = phase_timed(
+            "PHASE 5 — AppCDS + Prefetch",
+            ["-Xshare:auto", f"-XX:SharedArchiveFile={archive_path}",
+             "-Dvspeed.benchmark=true"],
+        )
+
+        log("\n[Cooldown] 10 seconds...", "y")
+        time.sleep(10)
+
+        # Phase 6 — AppCDS + G1GC + Prefetch (best of both)
+        log("\n[Prefetch] Warming OS file cache...", "c")
+        pre_secs2, _ = prefetch_to_os_cache()
+        combo_phase = phase_timed(
+            "PHASE 6 — AppCDS + G1GC + Prefetch",
+            ["-Xshare:auto", f"-XX:SharedArchiveFile={archive_path}",
+             "-Dvspeed.benchmark=true"] + G1GC_FLAGS,
+        )
+
     # ── Results ───────────────────────────────────────────────────────────────
     bt  = baseline["time"]
     ct  = cds_only["time"]
@@ -942,19 +1418,20 @@ def main():
     log("  RESULTS", "c")
     log(f"{'='*58}", "c")
 
-    def result_line(label, t, ref=None):
+    def result_line(label, t, ref=None, note=""):
         if t <= 0:
-            log(f"  {label:<28}: FAILED", "r")
+            log(f"  {label:<36}: FAILED", "r")
             return
+        suffix = f"   {note}" if note else ""
         if ref and ref > 0:
             diff = ref - t
             pct  = diff / ref * 100
             sign = f"-{diff}s ({pct:.1f}% faster)" if diff > 0 else (
                    f"+{abs(diff)}s ({abs(pct):.1f}% slower)" if diff < 0 else "no change")
             color = "g" if diff > 0 else ("r" if diff < 0 else "y")
-            log(f"  {label:<28}: {t}s   {sign}", color)
+            log(f"  {label:<36}: {t}s   {sign}{suffix}", color)
         else:
-            log(f"  {label:<28}: {t}s", "w")
+            log(f"  {label:<36}: {t}s{suffix}", "w")
 
     result_line("Baseline",              bt)
     result_line("AppCDS only",           ct,  bt)
@@ -962,12 +1439,29 @@ def main():
 
     if ct > 0 and cmt > 0:
         extra = ct - cmt
-        if extra > 0:
-            log(f"\n  vspeed mod overhead     : -{extra}s (unexpected gain)", "g")
-        elif extra < 0:
-            log(f"\n  vspeed mod overhead     : +{abs(extra)}s regression vs CDS alone", "r")
+        if extra < 0:
+            log(f"\n  vspeed mod overhead: +{abs(extra)}s vs CDS alone", "r")
         else:
-            log("\n  vspeed mod: no overhead vs CDS alone  ✓", "g")
+            log("\n  vspeed mod: no overhead  ✓", "g")
+
+    if args.extended:
+        log("", "w")
+        if gc_phase:
+            result_line("AppCDS + G1GC tuning", gc_phase["time"], bt)
+        if prefetch_phase:
+            result_line("AppCDS + Prefetch",  prefetch_phase["time"], bt,
+                        f"(+{pre_secs:.1f}s prefetch → {prefetch_phase['time'] + pre_secs:.0f}s wall)")
+        if combo_phase:
+            result_line("AppCDS + G1GC + Prefetch", combo_phase["time"], bt,
+                        f"(+{pre_secs2:.1f}s prefetch → {combo_phase['time'] + pre_secs2:.0f}s wall)")
+
+        # Best configuration recommendation
+        candidates = [r for r in [gc_phase, prefetch_phase, combo_phase] if r and r["time"] > 0]
+        if candidates and bt > 0:
+            best = min(candidates, key=lambda r: r["time"])
+            log(f"\n  Best config: {best['label'].split('—')[1].strip()}", "g")
+            total_gain = bt - best["time"]
+            log(f"  Total gain : -{total_gain}s ({total_gain/bt*100:.1f}% faster than baseline)", "g")
 
     if CDS_ARCHIVE.exists():
         log(f"\n  Archive : {CDS_ARCHIVE.stat().st_size/(1024*1024):.0f} MB", "w")

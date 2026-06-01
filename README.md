@@ -1,3 +1,39 @@
+# ❄️ Cryo Launcher
+
+A fast, modern Minecraft modpack launcher for Windows — create instances, install modpacks from **Modrinth & CurseForge**, manage mods, and launch **without PrismLauncher**. Includes a built-in AI assistant, server browser, world backups, and the **VSpeed** startup-optimization engine.
+
+## ⬇️ Download (Windows)
+
+**[→ Download the latest installer (Cryo-win-Setup.exe)](https://github.com/xponer/vspeed-atm10/releases/latest)**
+
+1. Download `Cryo-win-Setup.exe` from the latest release.
+2. Run it — installs per-user (no admin needed), adds a Desktop + Start-menu shortcut.
+3. Windows SmartScreen may warn on first run (the app isn't code-signed yet) — click **More info → Run anyway**.
+4. The launcher **auto-updates** from GitHub: new releases download in the background and apply on restart.
+
+> First public test build — expect rough edges. Please report anything you hit. 🙏
+
+## 🐞 Found a bug?
+
+Use the in-app button **Settings → About → Report a bug**, or open one here:
+
+**[→ Report a bug](https://github.com/xponer/vspeed-atm10/issues/new/choose)**
+
+Please include your launcher version (Settings → About) and, if relevant, the launcher log (Settings → Self-Check → Open launcher log).
+
+## ✨ Features
+
+- **Create instances natively** — NeoForge / Forge / Fabric / Quilt / Vanilla, no Prism required
+- **Install modpacks** from Modrinth (`.mrpack`) and CurseForge in one click
+- **Mod browser** with version picker, SHA-512-verified downloads, and one-click updates
+- **Dependency check** + duplicate-mod scanner before you launch
+- **AI assistant** — diagnoses crashes, mod conflicts, and lag (bring your own free NVIDIA key)
+- **Server browser** with live ping, **world backups**, **boot waterfall**, launch **profiles**
+- **VSpeed engine** — AppCDS-based startup optimization (details below)
+- **Discord Rich Presence**, auto-update, light/dark themes
+
+---
+
 # VSpeed — Dynamic AppCDS for NeoForge Modpacks
 
 > **~13% faster startup** on All the Mods 10 (481 mods, 12 GB RAM) using Java's built-in Class Data Sharing.

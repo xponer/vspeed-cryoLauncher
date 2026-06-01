@@ -10,6 +10,13 @@ vspeed-agent/build/
 runs/
 bin/
 
+# ── .NET launcher build outputs ───────────────────────────────────────────────
+obj/
+launcher/publish/
+launcher/Releases/
+launcher/VSpeedLauncher/bin/
+launcher/VSpeedLauncher/obj/
+
 # ── JVM crash / heap dumps ────────────────────────────────────────────────────
 *.hprof
 hs_err_pid*.log
@@ -19,8 +26,10 @@ prism_error.log
 prism_launch.log
 *.log
 
-# ── CDS archive (large, machine-specific) ─────────────────────────────────────
+# ── CDS archive + JEP 483 AOT cache (large, machine-specific) ────────────────
 *.jsa
+*.aot
+*.aotconf
 
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/

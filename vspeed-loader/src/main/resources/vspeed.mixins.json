@@ -5,7 +5,8 @@
   "plugin": "dev.vspeed.mixin.VSpeedMixinPlugin",
   "mixins": [
     "ParallelReloadMixin",
-    "ParallelModelBakingMixin"
+    "ParallelModelBakingMixin",
+    "JsonReloadCacheMixin"
   ],
   "client": [],
   "injectors": {
