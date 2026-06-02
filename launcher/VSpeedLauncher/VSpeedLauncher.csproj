@@ -7,7 +7,7 @@
     <AssemblyName>VSpeedLauncher</AssemblyName>
 
     <!-- App version — bump for each release; Velopack uses it as the SemVer. -->
-    <Version>1.0.0</Version>
+    <Version>1.0.3</Version>
     <!-- Velopack must run before WPF, so we use an explicit Program.Main. -->
     <StartupObject>VSpeedLauncher.Program</StartupObject>
 

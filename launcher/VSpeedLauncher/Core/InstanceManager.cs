@@ -261,7 +261,12 @@ public sealed class InstanceManager
     {
         if (inst.State != InstanceState.Ready) return;
         var bytes = ProcessHibernator.Hibernate(inst.JvmPid);
-        inst.ResidentMB = bytes > 0 ? bytes / 1024 / 1024 : 0;
+        if (bytes < 0)
+        {
+            Logger.Warn($"Hibernate({inst.Entry.Id}): hibernation failed, state unchanged");
+            return;
+        }
+        inst.ResidentMB = bytes / 1024 / 1024;
         inst.State = InstanceState.Hibernated;
         Application.Current.Dispatcher.Invoke(inst.Notify);
     }

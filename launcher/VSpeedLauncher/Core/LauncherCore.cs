@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Net.Http;
 using CmlLib.Core;
 using CmlLib.Core.Auth;
@@ -24,6 +25,7 @@ namespace VSpeedLauncher.Core;
 public sealed class LauncherCore
 {
     private readonly string _root;
+    private static readonly HttpClient _http = new();
 
     /// <summary>Shared CmlLib game root: libraries, versions, assets.</summary>
     public string Root => _root;
@@ -108,7 +110,7 @@ public sealed class LauncherCore
     public async Task<string> InstallFabricAsync(string mcVersion, string? loaderVersion = null)
     {
         var path = new MinecraftPath(_root);
-        var installer = new FabricInstaller(new HttpClient());
+        var installer = new FabricInstaller(_http);
         return string.IsNullOrEmpty(loaderVersion)
             ? await installer.Install(mcVersion, path)
             : await installer.Install(mcVersion, loaderVersion, path);
@@ -117,7 +119,7 @@ public sealed class LauncherCore
     public async Task<string> InstallQuiltAsync(string mcVersion, string? loaderVersion = null)
     {
         var path = new MinecraftPath(_root);
-        var installer = new QuiltInstaller(new HttpClient());
+        var installer = new QuiltInstaller(_http);
         return string.IsNullOrEmpty(loaderVersion)
             ? await installer.Install(mcVersion, path)
             : await installer.Install(mcVersion, loaderVersion, path);
@@ -159,6 +161,7 @@ public sealed class LauncherCore
         string? gameDir  = null,
         string? javaPath = null,
         IEnumerable<MArgument>? extraJvmArgs = null,
+        string? stdoutLog = null,
         CancellationToken ct = default)
     {
         // Libraries/versions live in _root; game dir (mods/config/saves) is separate.
@@ -183,6 +186,56 @@ public sealed class LauncherCore
         if (extraJvmArgs != null) opt.ExtraJvmArguments = extraJvmArgs;
 
         var proc = await launcher.InstallAndBuildProcessAsync(versionId, opt, ct);
+
+        // Capture the JVM's stdout/stderr so early crashes (which never reach
+        // Minecraft's own logs/latest.log) are still recoverable for diagnosis.
+        if (!string.IsNullOrWhiteSpace(stdoutLog))
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(stdoutLog)!);
+
+                // Create the writer BEFORE mutating StartInfo so that if the
+                // StreamWriter constructor throws (e.g. permissions), StartInfo
+                // is still clean and the fallback proc.Start() below works correctly.
+                var writer = new StreamWriter(stdoutLog, append: false, System.Text.Encoding.UTF8)
+                {
+                    AutoFlush = true,
+                };
+
+                proc.StartInfo.UseShellExecute        = false;
+                proc.StartInfo.RedirectStandardOutput = true;
+                proc.StartInfo.RedirectStandardError  = true;
+                proc.StartInfo.StandardOutputEncoding = System.Text.Encoding.UTF8;
+                proc.StartInfo.StandardErrorEncoding  = System.Text.Encoding.UTF8;
+                var gate = new object();
+                proc.OutputDataReceived += (_, e) =>
+                {
+                    if (e.Data == null) return;
+                    lock (gate) writer.WriteLine(e.Data);
+                };
+                proc.ErrorDataReceived += (_, e) =>
+                {
+                    if (e.Data == null) return;
+                    lock (gate) writer.WriteLine(e.Data);
+                };
+                proc.Exited += (_, _) =>
+                {
+                    try { lock (gate) { writer.Flush(); writer.Dispose(); } } catch { }
+                };
+                proc.EnableRaisingEvents = true;
+
+                proc.Start();
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+                return proc;
+            }
+            catch
+            {
+                // If redirection setup fails, fall through to a plain launch.
+            }
+        }
+
         proc.Start();
         return proc;
     }

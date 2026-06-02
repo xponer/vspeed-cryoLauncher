@@ -22,11 +22,18 @@ public static class LogReader
 
     public static List<LogEntry> Read(string instanceId, string prismDataDir, int maxLines = 3000)
     {
-        var logPath = Path.Combine(prismDataDir, "instances", instanceId,
-                                   "minecraft", "logs", "latest.log");
-        if (!File.Exists(logPath))
+        var logDir = Path.Combine(prismDataDir, "instances", instanceId, "minecraft", "logs");
+        var latest = Path.Combine(logDir, "latest.log");
+        var engine = Path.Combine(logDir, "cryo-engine.log");
+
+        // Prefer whichever log is freshest. A normal run keeps latest.log live,
+        // but an early JVM crash (bad arg, missing main class, AppCDS mismatch)
+        // never reaches log4j — so latest.log is absent or stale and the only
+        // trace is the stdout/stderr we captured into cryo-engine.log.
+        var logPath = PickFreshestLog(latest, engine);
+        if (logPath == null)
         {
-            Logger.Warn($"Log not found: {logPath}");
+            Logger.Warn($"Log not found for '{instanceId}' (no latest.log or cryo-engine.log in {logDir})");
             return new();
         }
 
@@ -74,6 +81,18 @@ public static class LogReader
         return entries;
     }
 
+    /// <summary>Returns the freshest of the two log files, or null if neither exists.</summary>
+    private static string? PickFreshestLog(string latest, string engine)
+    {
+        bool hasLatest = File.Exists(latest);
+        bool hasEngine = File.Exists(engine);
+        if (!hasLatest && !hasEngine) return null;
+        if (hasLatest && !hasEngine) return latest;
+        if (!hasLatest && hasEngine) return engine;
+        // Both present — the most recently written one reflects the latest launch.
+        return File.GetLastWriteTimeUtc(engine) > File.GetLastWriteTimeUtc(latest) ? engine : latest;
+    }
+
     private static LogEntry Parse(string raw, ref long lastEpoch, int id)
     {
         var m = _logLine.Match(raw);
@@ -99,15 +118,31 @@ public static class LogReader
         }
 
         var m2 = _simpleLine.Match(raw);
+        // Unstructured line (e.g. raw JVM stdout/stderr from cryo-engine.log on an
+        // early crash). Surface obvious failure lines as ERROR so they stand out.
+        var level = "INFO";
+        if (!m2.Success && LooksLikeError(raw)) level = "ERROR";
+
         return new LogEntry
         {
             Id     = id,
             T      = lastEpoch += 50,
-            Level  = "INFO",
+            Level  = level,
             Src    = "Minecraft",
             Thread = m2.Success ? m2.Groups["thread"].Value : "main",
             Msg    = m2.Success ? m2.Groups["msg"].Value : raw,
         };
+    }
+
+    private static bool LooksLikeError(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return false;
+        return line.Contains("Exception", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Error",   StringComparison.OrdinalIgnoreCase)
+            || line.Contains("Could not", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("Unable to", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("FATAL",     StringComparison.OrdinalIgnoreCase)
+            || line.Contains("crash",     StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Returns true if the line is a stack-trace or log-continuation line

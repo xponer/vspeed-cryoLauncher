@@ -231,21 +231,49 @@ function Slider({ value, min, max, step = 1, onChange, format }) {
   );
 }
 
-/* ---------------- Select (custom dropdown) ---------------- */
+/* ---------------- Select (custom dropdown) ----------------
+   The menu is portalled to <body> at fixed coords so it can never be clipped
+   by a card's overflow or trapped under a sibling's backdrop-filter stacking
+   context (the bug where the list rendered behind the next card). */
 function Select({ value, options, onChange, width, size = "md", icon }) {
   const [open, setOpen] = uS(false);
+  const [pos, setPos] = uS(null);   // { top, left, width } viewport coords
   const ref = uR(null);
+
+  function toggle(e) {
+    e.stopPropagation();
+    if (open) { setOpen(false); return; }
+    const r = ref.current.getBoundingClientRect();
+    const gap = 6;
+    const estH = Math.min(280, options.length * 36 + 10);
+    let top = r.bottom + gap;
+    if (top + estH > window.innerHeight - 8) top = Math.max(8, r.top - gap - estH);  // flip up
+    setPos({ top, left: r.left, width: r.width });
+    setOpen(true);
+  }
+
   uE(() => {
     if (!open) return;
-    const fn = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", fn);
-    return () => document.removeEventListener("mousedown", fn);
+    const close = () => setOpen(false);
+    const onKey = e => { if (e.key === "Escape") setOpen(false); };
+    const onDown = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("resize", close);
+    document.getElementById("cryo-main")?.addEventListener("scroll", close, { once: true });
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("resize", close);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
+
   const cur = options.find(o => (typeof o === "object" ? o.value : o) === value);
   const curLabel = cur ? (typeof cur === "object" ? cur.label : cur) : value;
+
   return React.createElement("div", { ref, style: { position: "relative", width: width || "auto" } },
     React.createElement("button", {
-      onClick: () => setOpen(o => !o), className: "no-drag",
+      onClick: toggle, className: "no-drag",
       style: {
         display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between",
         height: size === "sm" ? 30 : 37, padding: "0 11px", width: "100%",
@@ -257,29 +285,33 @@ function Select({ value, options, onChange, width, size = "md", icon }) {
         icon && React.createElement(Icon, { name: icon, size: 14, style: { color: "var(--text-dim)" } }), curLabel),
       React.createElement(Icon, { name: "chevronDown", size: 15, style: { color: "var(--text-dim)", transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" } }),
     ),
-    open && React.createElement("div", {
-      className: "glass-pop anim-fadein",
-      style: {
-        position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50,
-        borderRadius: "var(--r-md)", padding: 5, maxHeight: 280, overflowY: "auto",
+    open && pos && ReactDOM.createPortal(
+      React.createElement("div", {
+        className: "glass-pop anim-fadein",
+        onMouseDown: e => e.stopPropagation(),
+        style: {
+          position: "fixed", top: pos.top, left: pos.left, width: Math.max(pos.width, 120), zIndex: 9000,
+          borderRadius: "var(--r-md)", padding: 5, maxHeight: 280, overflowY: "auto",
+        },
       },
-    },
-      options.map(o => {
-        const v = typeof o === "object" ? o.value : o;
-        const l = typeof o === "object" ? o.label : o;
-        const active = v === value;
-        return React.createElement("button", {
-          key: v, onClick: () => { onChange(v); setOpen(false); }, className: "no-drag",
-          style: {
-            display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
-            padding: "8px 10px", borderRadius: "var(--r-sm)", border: "none", textAlign: "left",
-            background: active ? "var(--acc-soft)" : "transparent", color: active ? "var(--acc-text)" : "var(--text)",
-            fontSize: 13, fontWeight: active ? 600 : 500,
-          },
-          onMouseEnter: e => { if (!active) e.currentTarget.style.background = "var(--panel-2)"; },
-          onMouseLeave: e => { if (!active) e.currentTarget.style.background = "transparent"; },
-        }, l, active && React.createElement(Icon, { name: "check", size: 14 }));
-      }),
+        options.map(o => {
+          const v = typeof o === "object" ? o.value : o;
+          const l = typeof o === "object" ? o.label : o;
+          const active = v === value;
+          return React.createElement("button", {
+            key: v, onClick: () => { onChange(v); setOpen(false); }, className: "no-drag",
+            style: {
+              display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
+              padding: "8px 10px", borderRadius: "var(--r-sm)", border: "none", textAlign: "left",
+              background: active ? "var(--acc-soft)" : "transparent", color: active ? "var(--acc-text)" : "var(--text)",
+              fontSize: 13, fontWeight: active ? 600 : 500,
+            },
+            onMouseEnter: e => { if (!active) e.currentTarget.style.background = "var(--panel-2)"; },
+            onMouseLeave: e => { if (!active) e.currentTarget.style.background = "transparent"; },
+          }, l, active && React.createElement(Icon, { name: "check", size: 14 }));
+        }),
+      ),
+      document.body,
     ),
   );
 }
@@ -302,6 +334,34 @@ function TextInput({ value, onChange, placeholder, icon, size = "md", className 
       ...rest,
     }),
   );
+}
+
+/* ---------------- Minecraft head avatar ----------------
+   Skin-head services go down (crafatar in particular is flaky and has
+   returned HTTP 521 for extended periods). Relying on a single one means a
+   blank avatar whenever it's offline — so try several in order, then hide. */
+function SkinHead({ uuid, size = 22, radius = 6, style = {} }) {
+  const id = (uuid || "").replace(/-/g, "");
+  if (!id)
+    return React.createElement("div", {
+      style: { width: size, height: size, borderRadius: radius, background: "var(--panel-hi)", flexShrink: 0, ...style },
+    });
+  // Ordered fallbacks — lead with the reliable ones, keep crafatar last.
+  const sources = [
+    "https://mc-heads.net/avatar/" + id + "/" + size,
+    "https://minotar.net/helm/" + id + "/" + size + ".png",
+    "https://crafatar.com/avatars/" + id + "?size=" + size + "&overlay",
+  ];
+  return React.createElement("img", {
+    src: sources[0], width: size, height: size, alt: "",
+    style: { borderRadius: radius, background: "var(--panel-hi)", display: "block", flexShrink: 0, ...style },
+    onError: e => {
+      const t = e.target;
+      const next = (parseInt(t.dataset.skinFb || "0", 10)) + 1;
+      if (next < sources.length) { t.dataset.skinFb = String(next); t.src = sources[next]; }
+      else t.style.visibility = "hidden";
+    },
+  });
 }
 
 /* ---------------- Tabs ---------------- */
@@ -465,21 +525,32 @@ function ErrorState({ title, body, onRetry, retryLabel = "Retry" }) {
 
 /* ---------------- Tooltip (lightweight) ---------------- */
 function Tip({ label, children, side = "top" }) {
-  const [show, setShow] = uS(false);
-  const pos = side === "top"
-    ? { bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)" }
-    : { top: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)" };
+  const [pos, setPos] = uS(null);   // { top, left } viewport coords, or null when hidden
+  const ref = uR(null);
+  function enter() {
+    if (!ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    setPos({ top: side === "top" ? r.top - 8 : r.bottom + 8, left: r.left + r.width / 2 });
+  }
+  function leave() { setPos(null); }
   return React.createElement("span", {
-    style: { position: "relative", display: "inline-flex" },
-    onMouseEnter: () => setShow(true), onMouseLeave: () => setShow(false),
+    ref, style: { display: "inline-flex" },
+    onMouseEnter: enter, onMouseLeave: leave,
   }, children,
-    show && React.createElement("span", {
-      className: "glass-pop anim-fadein",
-      style: {
-        position: "absolute", ...pos, zIndex: 80, padding: "5px 9px", borderRadius: 8,
-        fontSize: 11.5, color: "var(--text)", whiteSpace: "nowrap", pointerEvents: "none", fontWeight: 500,
-      },
-    }, label),
+    // Portalled to <body> so the tooltip is never clipped by a card's overflow
+    // or trapped under a sibling's backdrop-filter stacking context.
+    pos && ReactDOM.createPortal(
+      React.createElement("span", {
+        className: "glass-pop anim-fadein",
+        style: {
+          position: "fixed", top: pos.top, left: pos.left,
+          transform: side === "top" ? "translate(-50%, -100%)" : "translateX(-50%)",
+          zIndex: 9500, padding: "5px 9px", borderRadius: 8,
+          fontSize: 11.5, color: "var(--text)", whiteSpace: "nowrap", pointerEvents: "none", fontWeight: 500,
+        },
+      }, label),
+      document.body,
+    ),
   );
 }
 

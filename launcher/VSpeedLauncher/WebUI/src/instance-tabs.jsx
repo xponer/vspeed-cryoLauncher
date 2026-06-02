@@ -903,6 +903,11 @@ function SettingsTab({ instance, t, fmt, api, hasBridge }) {
   const [saving,   setSaving]   = tS(false);
   const [dirty,    setDirty]    = tS(false);
   const [loaded,   setLoaded]   = tS(false);
+  const [javas,    setJavas]    = tS(null);    // null = not scanned yet; [] = none found
+  const [reqMajor, setReqMajor] = tS(0);       // Java major this instance's MC needs
+  const [recPath,  setRecPath]  = tS("");      // recommended java path (or "" → download)
+  const [detecting,setDetecting]= tS(false);
+  const [sysRamMb, setSysRamMb] = tS(0);       // total physical RAM (caps the Max slider)
 
   // Load real config from bridge or fall back to mock preset
   tE(() => {
@@ -924,6 +929,30 @@ function SettingsTab({ instance, t, fmt, api, hasBridge }) {
       setLoaded(true);
     }
   }, [instance.id, hasBridge]);
+
+  // Discover installed Javas (Cryo bundled, Prism, vendor dirs, JAVA_HOME, PATH).
+  // fill=true also writes the recommended path into the field (Auto-detect button).
+  async function detectJava(fill) {
+    if (!hasBridge || !api.detectJavas) return;
+    setDetecting(true);
+    try {
+      const r = await api.detectJavas(instance.id);
+      setJavas((r && r.javas) || []);
+      setReqMajor((r && r.requiredMajor) || 0);
+      setRecPath((r && r.recommendedPath) || "");
+      if (fill) {
+        const p = (r && r.recommendedPath) || "";
+        setJavaPath(p); setDirty(true);
+        if (window.toast) window.toast(p
+          ? { tone: "success", icon: "check", title: "Java auto-detected", body: "Java " + ((r && r.requiredMajor) || "?") + " · " + p }
+          : { tone: "info", icon: "info", title: "Auto Java", body: "Cryo will download Java " + ((r && r.requiredMajor) || "?") + " on launch." });
+      }
+    } catch (e) {
+      if (window.toast) window.toast({ tone: "error", icon: "alert", title: "Java detection failed", body: e.message });
+    } finally { setDetecting(false); }
+  }
+  tE(() => { if (hasBridge) detectJava(false); }, [instance.id, hasBridge]);
+  tE(() => { if (hasBridge && api.getSystemRam) api.getSystemRam().then(r => setSysRamMb((r && r.totalMb) || 0)).catch(() => {}); }, [hasBridge]);
 
   function markDirty(fn, setter) { return v => { setter(v); setDirty(true); }; }
 
@@ -962,16 +991,16 @@ function SettingsTab({ instance, t, fmt, api, hasBridge }) {
     }
   }
 
-  const Section = ({ icon, title, desc, children }) =>
-    React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
-      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9, marginBottom: desc ? 4 : 16 } },
-        React.createElement(Icon, { name: icon, size: 16, style: { color: "var(--acc-2)" } }),
-        React.createElement("h3", { style: { margin: 0, fontSize: 14.5, fontWeight: 680 } }, title)),
-      desc && React.createElement("p", { style: { margin: "0 0 16px 25px", fontSize: 12, color: "var(--text-faint)" } }, desc),
-      children);
-
   if (!loaded) return React.createElement("div", { style: { display: "flex", justifyContent: "center", padding: 40 } },
     React.createElement(Spinner, { size: 24 }));
+
+  // Match the configured path against detected Javas ignoring slash style
+  // (instance.cfg uses forward slashes; detected paths use backslashes).
+  const normJava = s => (s || "").replace(/[\\/]+/g, "/").toLowerCase();
+  const javaSel  = (javas || []).find(j => normJava(j.path) === normJava(javaPath));
+  // Cap the Max-RAM slider at the machine's physical RAM (not a fixed 64 GB).
+  // Keep at least the stored value so an existing higher setting still renders.
+  const ramCeil  = sysRamMb > 0 ? Math.max(Math.floor(sysRamMb / 512) * 512, ramMax) : 65536;
 
   return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } },
     // Unsaved changes banner
@@ -983,13 +1012,14 @@ function SettingsTab({ instance, t, fmt, api, hasBridge }) {
       React.createElement("span", { style: { fontSize: 12, color: "var(--text-dim)" } }, "— saved directly to instance.cfg"),
     ),
 
-    React.createElement(Section, { icon: "ram", title: t("set.ram") },
+    React.createElement(Section, { icon: "ram", title: t("set.ram"),
+        desc: sysRamMb > 0 ? ("This PC has " + (sysRamMb / 1024).toFixed(1) + " GB RAM installed — the maximum is capped to that.") : undefined },
       React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } },
         React.createElement(LabeledRow, { label: t("set.ramMin") },
           React.createElement(Slider, { value: ramMin, min: 512, max: ramMax, step: 512, onChange: markDirty(null, setRamMin),
             format: v => (v / 1024).toFixed(1) + " GB" })),
         React.createElement(LabeledRow, { label: t("set.ramMax") },
-          React.createElement(Slider, { value: ramMax, min: ramMin, max: 65536, step: 512, onChange: markDirty(null, setRamMax),
+          React.createElement(Slider, { value: ramMax, min: ramMin, max: ramCeil, step: 512, onChange: markDirty(null, setRamMax),
             format: v => (v / 1024).toFixed(1) + " GB" })),
       ),
     ),
@@ -997,8 +1027,22 @@ function SettingsTab({ instance, t, fmt, api, hasBridge }) {
     React.createElement(Section, { icon: "cpu", title: t("set.java") },
       React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
         React.createElement(LabeledRow, { label: t("set.javaPath") },
-          React.createElement(TextInput, { value: javaPath, onChange: v => { setJavaPath(v); setDirty(true); },
-            icon: "folder", mono: true, size: "sm", placeholder: "Auto-detect" })),
+          React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+            React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+              React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                React.createElement(TextInput, { value: javaPath, onChange: v => { setJavaPath(v); setDirty(true); },
+                  icon: "folder", mono: true, size: "sm", placeholder: "Auto-detect" })),
+              React.createElement(Btn, { variant: "subtle", size: "sm", icon: detecting ? "refresh" : "sparkles", iconSpin: detecting,
+                disabled: detecting, onClick: () => detectJava(true) }, "Auto-detect")),
+            (javas && javas.length > 0) && React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
+              React.createElement("span", { style: { fontSize: 11.5, color: "var(--text-faint)", whiteSpace: "nowrap" } },
+                "Detected" + (reqMajor ? " · needs Java " + reqMajor : "") + ":"),
+              React.createElement(Select, { value: (javaSel ? javaSel.path : ""), size: "sm", width: 380,
+                onChange: v => { setJavaPath(v); setDirty(true); },
+                options: [{ value: "", label: "Auto" + (recPath ? "" : " (download on launch)") }].concat(
+                  javas.map(j => ({ value: j.path, label: (j.recommended ? "★ " : "") + "Java " + j.major + (j.vendor ? " · " + j.vendor : "") + (j.version ? " (" + j.version + ")" : "") }))) })),
+            (javas && javas.length === 0) && React.createElement("span", { style: { fontSize: 11.5, color: "var(--text-faint)" } },
+              "No Java found on disk — Cryo will download Java " + (reqMajor || "?") + " automatically on launch."))),
         React.createElement(LabeledRow, { label: t("set.window") },
           React.createElement(Select, { value: res, onChange: setRes, width: 200, size: "sm",
             options: ["1280×720", "1600×900", "1920×1080", "2560×1440", "Fullscreen"] })),
@@ -1016,6 +1060,18 @@ function SettingsTab({ instance, t, fmt, api, hasBridge }) {
         saving ? "Saving…" : t("common.save")),
     ),
   );
+}
+
+// Top-level (NOT defined inside SettingsTab) so its identity is stable across
+// renders — otherwise React remounts the whole subtree each keystroke and any
+// focused input (e.g. the Java path field) loses focus after every letter.
+function Section({ icon, title, desc, children }) {
+  return React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9, marginBottom: desc ? 4 : 16 } },
+      React.createElement(Icon, { name: icon, size: 16, style: { color: "var(--acc-2)" } }),
+      React.createElement("h3", { style: { margin: 0, fontSize: 14.5, fontWeight: 680 } }, title)),
+    desc && React.createElement("p", { style: { margin: "0 0 16px 25px", fontSize: 12, color: "var(--text-faint)" } }, desc),
+    children);
 }
 
 function LabeledRow({ label, children }) {

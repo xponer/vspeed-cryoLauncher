@@ -295,7 +295,7 @@ function AccountSection({ t, api, hasBridge }) {
       ? React.createElement("div", { style: { fontSize: 12.5, color: "var(--text-dim)" } }, "Available in the desktop launcher.")
       : li
         ? React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14 } },
-            React.createElement("img", { src: "https://crafatar.com/avatars/" + uuid + "?size=48&overlay", width: 48, height: 48, style: { borderRadius: 10, background: "var(--panel-2)" }, onError: e => { e.target.style.visibility = "hidden"; } }),
+            React.createElement(SkinHead, { uuid, size: 48, radius: 10, style: { background: "var(--panel-2)" } }),
             React.createElement("div", { style: { flex: 1, minWidth: 0 } },
               React.createElement("div", { style: { fontSize: 15, fontWeight: 700 } }, acc.username || "Signed in"),
               React.createElement("div", { className: "mono", style: { fontSize: 11, color: "var(--text-faint)", wordBreak: "break-all" } }, acc.uuid || "")),

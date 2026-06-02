@@ -119,11 +119,7 @@ function AccountChip() {
       },
     },
       li
-        ? React.createElement("img", {
-            src: "https://crafatar.com/avatars/" + uuid + "?size=22&overlay", width: 22, height: 22,
-            style: { borderRadius: 6, background: "var(--panel-hi)", display: "block" },
-            onError: e => { e.target.style.visibility = "hidden"; },
-          })
+        ? React.createElement(SkinHead, { uuid, size: 22, radius: 6 })
         : React.createElement(Icon, { name: "globe", size: 14 }),
       React.createElement("span", { style: { maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
         li ? (acc.username || "Account") : "Sign in"),

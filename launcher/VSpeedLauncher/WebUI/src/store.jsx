@@ -247,6 +247,8 @@ function createBridgeApi() {
     // ── Instance config ───────────────────────────────────────────────────────
     async getInstanceCfg(id)            { return call("getInstanceCfg",    { id }); },
     async saveInstanceCfg(id, data)     { return call("saveInstanceCfg",   { id, ...data }); },
+    async detectJavas(id)               { return call("detectJavas",       { id }, 15000); },
+    async getSystemRam()                { return call("getSystemRam",      {}); },
     // ── Shell / file actions ──────────────────────────────────────────────────
     async setModEnabled(id, file, en)   { return call("setModEnabled",      { id, file, enabled: !!en }); },
     async openUrl(url)                  { return call("openUrl",            { url }); },

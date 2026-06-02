@@ -303,6 +303,8 @@ public sealed class CryoBridge
             // ── Instance config (instance.cfg) ─────────────────────────────────
             "getInstanceCfg"    => GetInstanceCfg(args.Str("id")),
             "saveInstanceCfg"   => SaveInstanceCfg(args.Str("id"), args),
+            "detectJavas"       => DetectJavas(args.Str("id")),
+            "getSystemRam"      => GetSystemRam(),
             // ── Shell / file actions ───────────────────────────────────────────
             "openFolder"        => OpenFolder(args.Str("id")),
             "openCrashReport"   => OpenCrashReport(args.Str("id")),
@@ -2658,6 +2660,232 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                      "VSpeedLauncher", "game");
 
+    /// <summary>Maps a Minecraft version to the Java major version it requires
+    /// (matches Mojang's bundled runtimes). Used to gate Java-version-specific flags.</summary>
+    private static int JavaMajorForMc(string mc)
+    {
+        // Parse "1.MINOR(.PATCH)"
+        var parts = (mc ?? "").Split('.');
+        if (parts.Length < 2 || !int.TryParse(parts[1], out var minor)) return 21;  // assume modern
+        int patch = parts.Length >= 3 && int.TryParse(parts[2], out var p) ? p : 0;
+        if (minor >= 21) return 21;
+        if (minor == 20) return patch >= 5 ? 21 : 17;   // 1.20.5+ → Java 21
+        if (minor >= 18) return 17;                       // 1.18–1.20.4 → Java 17
+        if (minor == 17) return 16;                       // 1.17 → Java 16
+        return 8;                                         // ≤ 1.16 → Java 8
+    }
+
+    /// <summary>
+    /// Finds an already-installed Mojang JRE (<c>javaw.exe</c>) matching a Java
+    /// major version under the engine's runtime dir, or <c>null</c> if none is
+    /// present yet (so the caller can let CmlLib download the right one).
+    /// </summary>
+    private static string? ResolveBundledJava(int major)
+    {
+        // Mojang runtime components → Java major. For 17 several components exist;
+        // prefer the newest. (jre-legacy=8, alpha=16, beta/gamma=17, delta=21.)
+        string[] components = major switch
+        {
+            >= 21 => new[] { "java-runtime-delta" },
+            17    => new[] { "java-runtime-gamma", "java-runtime-gamma-snapshot", "java-runtime-beta" },
+            16    => new[] { "java-runtime-alpha" },
+            <= 8  => new[] { "jre-legacy" },
+            _     => new[] { "java-runtime-delta", "java-runtime-gamma", "java-runtime-beta", "jre-legacy" },
+        };
+        var baseDir = Path.Combine(EngineRoot, "runtime", "windows-x64");
+        foreach (var c in components)
+            foreach (var exe in new[] { "javaw.exe", "java.exe" })  // prefer no-console javaw
+            {
+                var p = Path.Combine(baseDir, c, "bin", exe);
+                if (File.Exists(p)) return p;
+            }
+        return null;
+    }
+
+    /// <summary>Reads the user-configured Java path (javaw.exe) from an instance's
+    /// instance.cfg <c>[General]</c> section, or <c>""</c> if unset.</summary>
+    private string ReadInstanceJavaPath(string instanceId)
+    {
+        var cfgPath = Path.Combine(_prismDataDir, "instances", instanceId, "instance.cfg");
+        if (!File.Exists(cfgPath)) return "";
+        try
+        {
+            bool inGeneral = true;
+            foreach (var raw in File.ReadAllLines(cfgPath))
+            {
+                var l = raw.Trim();
+                if (l.StartsWith("[")) { inGeneral = l.Equals("[General]", StringComparison.OrdinalIgnoreCase); continue; }
+                if (!inGeneral) continue;
+                if (l.StartsWith("JavaPath=", StringComparison.OrdinalIgnoreCase))
+                    return l["JavaPath=".Length..].Trim().Trim('"');
+            }
+        }
+        catch { /* unreadable cfg → treat as unset */ }
+        return "";
+    }
+
+    private sealed class JavaInfo
+    {
+        public string Path = ""; public string Version = ""; public int Major; public string Vendor = ""; public string Source = "";
+    }
+
+    /// <summary>Parses a Java version string ("1.8.0_412", "17.0.15", "21.0.1") into its major.</summary>
+    private static int MajorFromVersion(string ver)
+    {
+        if (string.IsNullOrWhiteSpace(ver)) return 0;
+        var parts = ver.Split('.', '_', '-', '+');
+        if (parts.Length == 0) return 0;
+        if (!int.TryParse(new string(parts[0].TakeWhile(char.IsDigit).ToArray()), out var first)) return 0;
+        if (first == 1 && parts.Length >= 2 && int.TryParse(new string(parts[1].TakeWhile(char.IsDigit).ToArray()), out var second))
+            return second;   // 1.8.0 → 8
+        return first;        // 17.0.15 → 17
+    }
+
+    /// <summary>Reads version/vendor from a JRE's <c>release</c> file (sibling of bin/).</summary>
+    private static (string version, int major, string vendor) ReadJavaRelease(string javawPath)
+    {
+        try
+        {
+            var home = Path.GetDirectoryName(Path.GetDirectoryName(javawPath)); // <home>/bin/javaw.exe → <home>
+            var rel  = home == null ? null : Path.Combine(home, "release");
+            if (rel != null && File.Exists(rel))
+            {
+                string ver = "", vendor = "";
+                foreach (var line in File.ReadAllLines(rel))
+                {
+                    if (line.StartsWith("JAVA_VERSION="))    ver    = line["JAVA_VERSION=".Length..].Trim().Trim('"');
+                    else if (line.StartsWith("IMPLEMENTOR=")) vendor = line["IMPLEMENTOR=".Length..].Trim().Trim('"');
+                }
+                return (ver, MajorFromVersion(ver), vendor);
+            }
+        }
+        catch { }
+        return ("", 0, "");
+    }
+
+    /// <summary>
+    /// Discovers Java installations on this machine — Cryo's bundled Mojang
+    /// runtimes, Prism's runtimes, common vendor install dirs, JAVA_HOME and PATH —
+    /// and computes the Java major the given instance's Minecraft version needs.
+    /// Powers the Settings → Java "Auto-detect" button and the picker list.
+    /// </summary>
+    private object DetectJavas(string instanceId)
+    {
+        var found = new Dictionary<string, JavaInfo>(StringComparer.OrdinalIgnoreCase);
+
+        void Consider(string? javawPath, string source)
+        {
+            if (string.IsNullOrWhiteSpace(javawPath)) return;
+            try
+            {
+                var full = Path.GetFullPath(javawPath);
+                if (!File.Exists(full) || found.ContainsKey(full)) return;
+                var (ver, major, vendor) = ReadJavaRelease(full);
+                found[full] = new JavaInfo { Path = full, Version = ver, Major = major, Vendor = vendor, Source = source };
+            }
+            catch { }
+        }
+        void ScanContainer(string? dir, string source)   // scans <dir>/*/bin/javaw.exe
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir)) return;
+                foreach (var sub in Directory.GetDirectories(dir))
+                    Consider(Path.Combine(sub, "bin", "javaw.exe"), source);
+            }
+            catch { }
+        }
+
+        // 1) Cryo's own bundled Mojang runtimes (self-contained, preferred).
+        ScanContainer(Path.Combine(EngineRoot, "runtime", "windows-x64"), "Cryo bundled");
+        // 2) PrismLauncher's runtimes (the user very likely already has these).
+        var appdata = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        ScanContainer(Path.Combine(appdata, "PrismLauncher", "java"), "Prism");
+        // 3) Common vendor install directories.
+        var pf  = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var pfx = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        foreach (var root in new[] { pf, pfx })
+        {
+            if (string.IsNullOrEmpty(root)) continue;
+            ScanContainer(Path.Combine(root, "Java"),             "Oracle/OpenJDK");
+            ScanContainer(Path.Combine(root, "Eclipse Adoptium"), "Adoptium");
+            ScanContainer(Path.Combine(root, "Microsoft"),        "Microsoft");
+            ScanContainer(Path.Combine(root, "Zulu"),             "Azul Zulu");
+            ScanContainer(Path.Combine(root, "Amazon Corretto"),  "Corretto");
+            ScanContainer(Path.Combine(root, "BellSoft"),         "Liberica");
+            ScanContainer(Path.Combine(root, "Semeru"),           "Semeru");
+            Consider(Path.Combine(root, "Common Files", "Oracle", "Java", "javapath", "javaw.exe"), "Oracle");
+        }
+        // 4) JAVA_HOME, then 5) anything on PATH.
+        var jh = Environment.GetEnvironmentVariable("JAVA_HOME");
+        if (!string.IsNullOrWhiteSpace(jh)) Consider(Path.Combine(jh, "bin", "javaw.exe"), "JAVA_HOME");
+        foreach (var p in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+            Consider(Path.Combine(p.Trim(), "javaw.exe"), "PATH");
+
+        // Required major for this instance's MC version.
+        int requiredMajor = 0; string mc = "";
+        try { var meta = InstanceMetaReader.Read(instanceId, _prismDataDir); mc = meta.Mc ?? ""; requiredMajor = JavaMajorForMc(mc); }
+        catch { }
+
+        // Recommended: Cryo's bundled JRE for the required major if present, else any
+        // detected Java whose major matches (leave "" → engine downloads on launch).
+        string recommended = ResolveBundledJava(requiredMajor) ?? "";
+        if (string.IsNullOrEmpty(recommended) && requiredMajor > 0)
+            recommended = found.Values.Where(j => j.Major == requiredMajor)
+                                      .OrderByDescending(j => j.Version, StringComparer.Ordinal)
+                                      .Select(j => j.Path).FirstOrDefault() ?? "";
+
+        var list = found.Values
+            .OrderByDescending(j => j.Major)
+            .ThenBy(j => j.Source, StringComparer.Ordinal)
+            .Select(j => new
+            {
+                path        = j.Path,
+                version     = j.Version,
+                major       = j.Major,
+                vendor      = j.Vendor,
+                source      = j.Source,
+                recommended = requiredMajor > 0 && j.Major == requiredMajor,
+            })
+            .ToList();
+
+        return new { mc, requiredMajor, recommendedPath = recommended, javas = list };
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint  dwLength;
+        public uint  dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    /// <summary>Total usable physical RAM in MB — bounds the memory-allocation
+    /// sliders to what the machine actually has instead of a fixed 64 GB cap.</summary>
+    private object GetSystemRam()
+    {
+        long totalMb = 0;
+        try
+        {
+            var st = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+            if (GlobalMemoryStatusEx(ref st)) totalMb = (long)(st.ullTotalPhys / (1024UL * 1024UL));
+        }
+        catch { }
+        // Fallback if the P/Invoke fails for any reason.
+        if (totalMb <= 0)
+            try { totalMb = (long)(GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / (1024 * 1024)); } catch { }
+        return new { totalMb };
+    }
+
     /// <summary>Reads the CmlLib version name previously stored for an instance.</summary>
     private string? GetStoredEngineVersion(string instanceId)
     {
@@ -2834,29 +3062,65 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 core.ByteProgress += (b, t) =>
                     Push("engineProgress", new { phase = "bytes", bytesDone = b, bytesTotal = t });
 
-                // Build extra JVM args: VSpeed pipe signal + AppCDS
+                // Build extra JVM args: VSpeed pipe signal + AppCDS.
                 var extraJvm = new List<CmlLib.Core.ProcessBuilder.MArgument>
                 {
                     CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine($"-Dvspeed.daemon=true"),
                     CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine($"-Dvspeed.instance={instanceId}"),
                 };
-                try
+                // AppCDS auto-archive (-XX:+AutoCreateSharedArchive) only exists in Java 19+.
+                // Older Minecraft uses Java 17/8 — adding it there makes the JVM abort on start
+                // ("Unrecognized VM option"). Gate it on the Java the MC version actually uses.
+                int javaMajor = JavaMajorForMc(meta.Mc);
+                if (javaMajor >= 19)
                 {
-                    var cdsDir  = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VSpeedLauncher", "cds");
-                    Directory.CreateDirectory(cdsDir);
-                    var safe = new string(instanceId.Where(char.IsLetterOrDigit).ToArray());
-                    var jsa  = Path.Combine(cdsDir, (safe.Length > 0 ? safe : "inst") + ".jsa");
-                    if (!jsa.Contains(' '))
+                    try
                     {
-                        extraJvm.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine($"-XX:+AutoCreateSharedArchive"));
-                        extraJvm.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine($"-XX:SharedArchiveFile={jsa}"));
+                        var cdsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VSpeedLauncher", "cds");
+                        Directory.CreateDirectory(cdsDir);
+                        var safe = new string(instanceId.Where(char.IsLetterOrDigit).ToArray());
+                        var jsa  = Path.Combine(cdsDir, (safe.Length > 0 ? safe : "inst") + ".jsa");
+                        if (!jsa.Contains(' '))
+                        {
+                            extraJvm.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine($"-XX:+AutoCreateSharedArchive"));
+                            extraJvm.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine($"-XX:SharedArchiveFile={jsa}"));
+                        }
                     }
+                    catch (Exception ex) { Logger.Warn($"AppCDS setup skipped for engine launch: {ex.Message}"); }
                 }
-                catch (Exception ex) { Logger.Warn($"AppCDS setup skipped for engine launch: {ex.Message}"); }
+                else Logger.Info($"AppCDS skipped for {instanceId}: MC {meta.Mc} uses Java {javaMajor} (<19)");
+
+                // Capture the game's stdout/stderr so an early JVM crash is diagnosable
+                // even when the game never wrote its own latest.log.
+                var engineLog = Path.Combine(gameDir, "logs", "cryo-engine.log");
+
+                // ── Java selection ───────────────────────────────────────────
+                // 1) An explicit user override (instance.cfg → JavaPath) wins, but
+                //    only if the file actually exists (a stale path must not break
+                //    launch — fall through to auto-detect instead).
+                // 2) Otherwise pick the bundled Mojang JRE whose major matches the
+                //    MC version. This hardens modded launches: a Fabric/Forge JSON
+                //    may not carry its own javaVersion, so CmlLib could otherwise
+                //    fall back to the wrong runtime (e.g. Java 8 → ClassFormatError).
+                // 3) If no suitable bundled JRE is present yet, leave null so CmlLib
+                //    downloads and resolves the correct runtime itself (vanilla path).
+                string? javaExe   = null;
+                var     userJava  = ReadInstanceJavaPath(instanceId);
+                if (!string.IsNullOrWhiteSpace(userJava))
+                {
+                    if (File.Exists(userJava)) { javaExe = userJava; Logger.Info($"Java: user override → {userJava}"); }
+                    else Logger.Warn($"Java: configured path not found, ignoring → {userJava}");
+                }
+                if (javaExe == null)
+                {
+                    javaExe = ResolveBundledJava(javaMajor);
+                    if (javaExe != null) Logger.Info($"Java: auto-selected bundled JRE for Java {javaMajor} → {javaExe}");
+                    else Logger.Info($"Java: no bundled Java {javaMajor} on disk yet — letting CmlLib resolve/download");
+                }
 
                 var proc = await core.InstallAndLaunchAsync(
                     versionName, session, meta.RamMax > 0 ? meta.RamMax : 4096,
-                    gameDir: gameDir, extraJvmArgs: extraJvm);
+                    gameDir: gameDir, javaPath: javaExe, extraJvmArgs: extraJvm, stdoutLog: engineLog);
 
                 inst.PrismProcess = proc;
                 inst.Notify();

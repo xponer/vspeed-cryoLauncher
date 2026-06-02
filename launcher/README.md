@@ -1,110 +1,119 @@
-# VSpeedLauncher — Persistent JVM Daemon
+# Cryo Launcher
 
-Native Windows launcher that turns Minecraft startup from "wait 88 seconds"
-into "click and play in ~3 seconds" — without the JVM eating 12 GB of RAM
-when you're not playing.
+A standalone Windows Minecraft modpack launcher with a built-in optimization
+engine ("VSpeed"). Native WPF host + WebView2 rendering a React UI, a CmlLib.Core
+launch engine, encrypted Microsoft auth, per-instance Java auto-detection, and
+Velopack auto-updates. **No PrismLauncher dependency.**
 
-## How it works in one paragraph
+> Looking for how the code is laid out and the project conventions? See
+> [`CLAUDE.md`](./CLAUDE.md). It also carries a changelog of recent fixes.
 
-The launcher spawns PrismLauncher with `-Dvspeed.daemon=true` injected via
-`JAVA_TOOL_OPTIONS`.  Inside the JVM, the `vspeed-loader` mod sees that flag,
-and after `FMLLoadCompleteEvent` it connects to a named pipe
-(`\\.\pipe\vspeed-daemon`) and sends `READY pid=<n> instance=<id>`.  The
-launcher reads that, calls **`NtSuspendProcess`** on the JVM, then
-**`EmptyWorkingSet`** — Windows then pages all 12 GB of heap out to
-`pagefile.sys`.  Resident memory drops from 12 GB → ~50 MB.
+## What it does
 
-To play again, click "Wake up".  The launcher calls `NtResumeProcess`, the
-threads start running, and Windows faults pages back from disk on the first
-access.  Total wake time: 2-5 seconds (depending on SSD speed).
+- **Install & play modpacks** from Modrinth and CurseForge, or create your own
+  instance. Loaders supported: NeoForge, Forge, Fabric, Quilt, and vanilla.
+- **Self-contained launch engine** — [CmlLib.Core](https://github.com/CmlLib/CmlLib.Core)
+  installs the version, libraries, and assets and builds the JVM command. The
+  correct Mojang JRE is downloaded automatically per Minecraft version.
+- **Microsoft sign-in** — tokens are encrypted at rest with **Windows DPAPI**
+  (current-user scope); the launcher never stores them in plaintext and never
+  sees your Microsoft password.
+- **Faster boot (VSpeed)** — on Java 19+ the engine adds AppCDS
+  (`-XX:+AutoCreateSharedArchive`) so subsequent launches reuse a class archive.
+- **Polished React UI** — Library, per-instance Overview with a live boot
+  timeline + benchmark, Performance, Mods, Worlds, Servers, and Settings; a
+  Dashboard, an AI Assistant, and a Logs viewer.
+- **Tuning that won't foot-gun you** — RAM sliders capped to your machine's
+  physical memory, JVM-argument presets (Balanced G1GC / Low-pause ZGC / Aikar),
+  and Java auto-detect with a picker of every JRE found on the system.
+- **Auto-updates** via [Velopack](https://github.com/velopack/velopack) from
+  GitHub Releases — testers get delta updates on launch.
 
-Nothing exotic: no CRaC, no WSL, no patched JVM.  Just two undocumented-but-
-stable-since-XP `ntdll` calls and one well-documented `psapi` call.  The
-launcher is a stock .NET 8 WPF app.
+## Requirements
 
-## Build
+- Windows 10 (1809+) or Windows 11, x64.
+- WebView2 Runtime (preinstalled on Windows 11; otherwise install the Evergreen
+  runtime from Microsoft).
+- The shipped build is **self-contained** — the .NET 8 runtime is embedded, so
+  end users don't need to install anything else.
 
-Prerequisites:
-* Windows 11 (or Windows 10 1809+)
-* .NET 8 SDK (`winget install Microsoft.DotNet.SDK.8`)
+## Build & run (development)
 
-From this directory:
+Prerequisite: **.NET 8 SDK** (`winget install Microsoft.DotNet.SDK.8`).
+
+```powershell
+# from this directory
+dotnet build VSpeedLauncher/VSpeedLauncher.csproj -c Release
 ```
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
-```
-Output: `bin/Release/net8.0-windows/win-x64/publish/VSpeedLauncher.exe`
-(~155 MB single-file exe with the full .NET runtime embedded — no install
-needed on target machines).
 
-## Run
+Run `VSpeedLauncher/bin/Release/net8.0-windows/win-x64/VSpeedLauncher.exe`.
+Stop any running instance before rebuilding — a running exe locks the output file.
 
-1. Double-click `VSpeedLauncher.exe`.  First launch shows the window; on
-   subsequent runs it stays in the tray until you click the icon.
-2. **Settings → PrismLauncher.exe** — point at your `prismlauncher.exe`
-   (auto-detected from `%LOCALAPPDATA%\Programs\PrismLauncher\`).
-3. Click **Play** next to ATM10.  The first run takes the usual ~68 s (CDS).
-   When the mod reports READY, the launcher auto-hibernates: tray
-   notification says "ATM10 hibernated, 47 MB resident".
-4. Next time you want to play: click **Wake up** (or use the tray menu).
-   ~3 seconds later the game window is alive.
+The UI (`VSpeedLauncher/WebUI/`) is **served from the source folder in dev builds**,
+so editing the `.jsx` files and relaunching is enough — no rebuild needed for
+front-end changes. Only C# changes require `dotnet build`.
 
-## Mod-side requirement
+## Build a release (installer + auto-update feed)
 
-Your ATM10 instance must have `vspeed-loader` installed (this repo's parent
-project).  The mod reads `-Dvspeed.daemon=true` and signals readiness.  If
-the mod is missing, the launcher will keep waiting for READY and eventually
-mark the instance as "Crashed".
+Prerequisite: the `vpk` CLI (`dotnet tool install -g vpk --version 1.1.1`).
 
-The mod is harmless in non-daemon launches: without the property set, it
-runs in normal mode and the named pipe code never runs.
+1. Bump `<Version>` in `VSpeedLauncher/VSpeedLauncher.csproj`.
+2. Run the build script:
+   ```powershell
+   ./build-release.ps1            # or: ./build-release.ps1 -Version 1.2.3
+   ```
+   It publishes a self-contained `win-x64` build and packs it with Velopack into
+   `Releases/` (`Cryo-win-Setup.exe`, full/delta `.nupkg`, and the update feed).
+3. Publish to GitHub Releases so installed apps auto-update (the script prints the
+   exact `vpk upload github …` command).
+
+`Cryo-win-Setup.exe` is the installer you hand to users for a first install.
 
 ## Architecture map
 
 ```
-launcher/VSpeedLauncher/
-├── App.xaml(.cs)              ─ application bootstrapper, wires up DI-like singletons
-├── app.manifest               ─ asInvoker (no UAC), Common Controls v6
-│
-├── Core/
-│   ├── ConfigStore.cs         ─ %LOCALAPPDATA%\VSpeedLauncher\config.json
-│   ├── InstanceManager.cs     ─ launch / hibernate / wake state machine
-│   ├── Logger.cs              ─ append-only file logger
-│   ├── PipeServer.cs          ─ named-pipe listener for the mod's READY signal
-│   └── ProcessHibernator.cs   ─ the actual Win32 magic (NtSuspendProcess + EmptyWorkingSet)
-│
-└── UI/
-    ├── MainWindow.xaml(.cs)   ─ Steam-style instance list
-    ├── SettingsWindow.xaml(.cs)
-    └── TrayIcon.cs            ─ WinForms NotifyIcon (WPF has no native tray API)
+launcher/
+├── build-release.ps1             ─ publish + Velopack pack
+└── VSpeedLauncher/
+    ├── Program.cs                ─ entry point (Velopack runs before WPF)
+    ├── App.xaml(.cs)             ─ WPF bootstrap; hosts the WebView2
+    ├── Core/
+    │   ├── CryoBridge.cs         ─ JS↔C# bridge + most logic: launch, account,
+    │   │                           modpack install, Java detection, instance cfg
+    │   ├── LauncherCore.cs       ─ CmlLib.Core wrapper (install loaders, launch)
+    │   ├── MicrosoftAccount.cs   ─ MSA login; DPAPI-encrypted token store
+    │   ├── LogReader.cs          ─ parses latest.log / cryo-engine.log
+    │   ├── InstanceMetaReader.cs ─ reads instance.cfg / mmc-pack.json
+    │   └── ConfigStore.cs        ─ %LocalAppData%\VSpeedLauncher\config.json
+    └── WebUI/                    ─ React (Babel standalone, no JSX) served at
+        │                           https://cryo.local/ via a virtual-host mapping
+        ├── Cryo Launcher.html    ─ script load order
+        └── src/
+            ├── app.jsx           ─ window shell + titlebar account chip
+            ├── ui.jsx            ─ shared components (Btn, Icon, Select, …)
+            ├── store.jsx         ─ the api.* bridge wrappers
+            ├── library.jsx       ─ instance grid + create/import
+            ├── instance-tabs.jsx ─ Overview / Performance / Mods / Settings
+            ├── modrinth.jsx      ─ Modrinth + CurseForge browser
+            ├── settings.jsx, dashboard.jsx, logs.jsx, assistant.jsx
 ```
 
-## Why these particular Win32 calls
+## Data locations
 
-`NtSuspendProcess` (ntdll) atomically suspends every thread in a process
-kernel-side.  Doing this from user-mode (CreateToolhelp32Snapshot +
-SuspendThread per thread) has a race: a new thread can be created between
-the snapshot and the iteration, and you'd miss it.
+- Game runtime (shared): `%LocalAppData%\VSpeedLauncher\game\`
+  (libraries, versions, assets, downloaded Mojang JREs under `runtime\`).
+- Instances (shared with PrismLauncher's layout):
+  `%APPDATA%\PrismLauncher\instances\<id>\` — `instance.cfg`, `mmc-pack.json`,
+  and the per-instance `minecraft\` (mods, config, saves, logs).
+- Encrypted account tokens: `%LocalAppData%\VSpeedLauncher\auth\accounts.bin`
+  (Windows DPAPI, current user only).
+- App config: `%LocalAppData%\VSpeedLauncher\config.json`.
 
-`EmptyWorkingSet` (psapi) tells the memory manager to evict every page that
-isn't actively pinned.  Pages stay committed (process VAS unchanged), they
-just live in `pagefile.sys` instead of RAM.  Combined with the suspend (no
-new accesses) this leaves the process at ~50 MB resident.
+## Java handling
 
-`NtResumeProcess` (ntdll) wakes everything.  First memory access per page
-triggers a page-fault which the OS resolves by reading from `pagefile.sys`.
-SSDs do this at 500-3000 MB/s so faulting 3 GB back in takes 1-6 seconds
-worst case — usually much less because not all pages are touched immediately.
-
-## What this does NOT do (yet)
-
-* **No multi-instance hibernation across reboots.**  After a Windows
-  reboot, all hibernated JVMs are gone.  pagefile.sys does not survive
-  reboot.  First launch after reboot takes the cold-boot time.
-* **No window restore optimisation.**  Wake currently just resumes threads
-  — you may briefly see the game catching up on missed frames before it
-  becomes interactive.  Future work: hide window before hibernate,
-  ShowWindow(SW_RESTORE) on wake.
-* **No memory ballooning detection.**  If you hibernate two 12 GB instances
-  on a 16 GB machine, both heaps land in pagefile.sys (~24 GB pagefile use).
-  That's fine if your pagefile is sized accordingly, but the launcher
-  doesn't warn you about it.
+The engine maps each Minecraft version to the Java major it needs
+(`≤1.16→8`, `1.17→16`, `1.18–1.20.4→17`, `1.20.5+/1.21→21`) and picks Java in this
+order: a user-set path in `instance.cfg` (if it exists) → a bundled JRE matching
+that major → otherwise CmlLib downloads the right one. AppCDS is only added on
+Java 19+ (it aborts older JVMs). Settings → Java offers an **Auto-detect** button
+and a picker listing every JRE found on the machine.
