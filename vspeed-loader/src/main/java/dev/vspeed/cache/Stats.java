@@ -64,10 +64,15 @@ public final class Stats {
         sb.append("  }\n}\n");
 
         Path tmp = Paths.get("vspeed-stats.json.tmp");
-        try (BufferedWriter w = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
-            w.write(sb.toString());
+        try {
+            try (BufferedWriter w = Files.newBufferedWriter(tmp, StandardCharsets.UTF_8)) {
+                w.write(sb.toString());
+            }
+            Files.move(tmp, FILE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (Exception e) {
+            try { Files.deleteIfExists(tmp); } catch (java.io.IOException ignored2) {}
+            throw e;
         }
-        Files.move(tmp, FILE, StandardCopyOption.REPLACE_EXISTING);
     }
 
     private record Entry(String mode, long ms, int entries) {}

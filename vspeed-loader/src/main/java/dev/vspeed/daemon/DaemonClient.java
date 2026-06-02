@@ -83,6 +83,7 @@ public final class DaemonClient {
                     + "returning anyway so resource reload can proceed.");
             }
         } catch (InterruptedException ie) {
+            System.out.println("[vspeed-Daemon] Notifier join interrupted");
             Thread.currentThread().interrupt();
         }
         System.out.flush();
@@ -126,7 +127,10 @@ public final class DaemonClient {
         try {
             Path p = Paths.get("").toAbsolutePath();
             for (int i = 0; i < 5 && p != null; i++) {
-                if (Files.exists(p.resolve("instance.cfg"))) return p.getFileName().toString();
+                if (Files.exists(p.resolve("instance.cfg"))) {
+                    Path fn = p.getFileName();
+                    if (fn != null) return fn.toString();
+                }
                 p = p.getParent();
             }
             Path cwd = Paths.get("").toAbsolutePath();
