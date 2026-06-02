@@ -894,6 +894,18 @@ function JvmChipEditor({ args, onChange, api, t }) {
   );
 }
 
+// Pick an Xmx (MB) from the pack's mod count, capped to the machine's RAM.
+// More heap isn't always better (huge heaps mean longer GC pauses), so we also
+// cap at 16 GB and always leave headroom for the OS.
+function recommendRamMb(mods, sysRamMb) {
+  let want = mods >= 350 ? 10240 : mods >= 200 ? 8192 : mods >= 100 ? 6144 : mods >= 30 ? 4096 : 3072;
+  const sys = sysRamMb > 0 ? sysRamMb : 8192;
+  const headroom = sys >= 16384 ? 4096 : Math.max(2048, Math.floor(sys * 0.25));
+  const ceiling = Math.max(2048, sys - headroom);
+  want = Math.min(want, ceiling, 16384);
+  return Math.max(2048, Math.floor(want / 512) * 512);
+}
+
 function SettingsTab({ instance, t, fmt, api, hasBridge }) {
   const [ramMin,   setRamMin]   = tS(instance.ramMin   || 2048);
   const [ramMax,   setRamMax]   = tS(instance.ramMax   || 8192);
@@ -955,6 +967,24 @@ function SettingsTab({ instance, t, fmt, api, hasBridge }) {
   tE(() => { if (hasBridge && api.getSystemRam) api.getSystemRam().then(r => setSysRamMb((r && r.totalMb) || 0)).catch(() => {}); }, [hasBridge]);
 
   function markDirty(fn, setter) { return v => { setter(v); setDirty(true); }; }
+
+  // One-click tune: RAM from mod count + this PC's RAM, JVM preset from Java major.
+  function optimize() {
+    const mods = instance.mods || 0;
+    const ram  = recommendRamMb(mods, sysRamMb);
+    const useZgc = reqMajor >= 21 && ram >= 10240;   // ZGC low-pause for Java 21 + big heaps
+    const presetName = useZgc ? "Low-pause (ZGC, Java 21)" : "Aikar's flags";
+    const presetArgs = (api.presets && (api.presets[presetName] || api.presets["Balanced (G1GC)"])) || [];
+    setRamMax(ram);
+    setRamMin(ram);            // fixed heap (Xms == Xmx) — avoids resize stutter
+    setArgs(presetArgs.slice());
+    setDirty(true);
+    if (window.toast) window.toast({
+      tone: "success", icon: "zap",
+      title: "Optimized for " + (instance.name || "this pack"),
+      body: (ram / 1024).toFixed(1) + " GB · " + presetName + " · " + mods + " mods · Java " + (reqMajor || "?"),
+    });
+  }
 
   async function save() {
     setSaving(true);
@@ -1021,6 +1051,12 @@ function SettingsTab({ instance, t, fmt, api, hasBridge }) {
         React.createElement(LabeledRow, { label: t("set.ramMax") },
           React.createElement(Slider, { value: ramMax, min: ramMin, max: ramCeil, step: 512, onChange: markDirty(null, setRamMax),
             format: v => (v / 1024).toFixed(1) + " GB" })),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginTop: 2, flexWrap: "wrap" } },
+          React.createElement(Btn, { variant: "accentSoft", size: "sm", icon: "zap", onClick: optimize, disabled: !sysRamMb },
+            "Optimize for this pack"),
+          React.createElement("span", { style: { fontSize: 11.5, color: "var(--text-faint)" } },
+            "Auto-sets RAM + JVM flags from " + (instance.mods || 0) + " mods · "
+              + (sysRamMb ? (sysRamMb / 1024).toFixed(0) + " GB RAM" : "your RAM") + " · Java " + (reqMajor || "?"))),
       ),
     ),
 

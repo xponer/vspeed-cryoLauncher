@@ -17,6 +17,10 @@ launcher/Releases/
 launcher/VSpeedLauncher/bin/
 launcher/VSpeedLauncher/obj/
 
+# ── Secrets: embedded into the binary at build, never committed ───────────────
+launcher/VSpeedLauncher/curseforge.key
+*.key
+
 # ── JVM crash / heap dumps ────────────────────────────────────────────────────
 *.hprof
 hs_err_pid*.log

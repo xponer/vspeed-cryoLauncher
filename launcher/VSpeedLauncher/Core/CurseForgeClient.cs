@@ -15,6 +15,18 @@ public sealed class CurseForgeClient
 
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
 
+    /// <summary>
+    /// App-wide CurseForge key embedded at build time from <c>curseforge.key</c>
+    /// (see the .csproj). Lets CurseForge work for every user with no per-user
+    /// setup. Empty when the build had no key file — callers then require the
+    /// user to supply their own key in Settings.
+    /// </summary>
+    public static readonly string DefaultApiKey =
+        typeof(CurseForgeClient).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+            .Cast<System.Reflection.AssemblyMetadataAttribute>()
+            .FirstOrDefault(a => a.Key == "CurseForgeApiKey")?.Value ?? "";
+
     /// <summary>Cryo loader name → CurseForge modLoaderType enum.</summary>
     public static int LoaderType(string loader) => (loader ?? "").ToLowerInvariant() switch
     {

@@ -99,7 +99,22 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
-### v1.0.3 — committed to `main` (pending GitHub/Velopack release)
+### v1.0.4 — CurseForge "works-for-everyone" groundwork + One-click Optimize
+- **One-click Optimize** (instance Settings → Memory allocation) — a button that
+  picks Xmx from the pack's mod count and the machine's physical RAM (leaves OS
+  headroom, capped at 16 GB), sets Xms=Xmx, and applies a JVM preset by Java major
+  (Aikar/G1GC by default; ZGC for Java 21 + ≥10 GB heap). `recommendRamMb` logic
+  verified via node across scenarios; GUI click-test pending (computer-use was
+  disconnected this session).
+- **CurseForge embedded-key mechanism** — CurseForge can work for ALL users with
+  no per-user key: drop a key into `VSpeedLauncher/curseforge.key` (gitignored) and
+  the build embeds it (csproj `AssemblyMetadata` → `CurseForgeClient.DefaultApiKey`).
+  Falls back to a user-entered key (Settings); the key never enters the public repo
+  (only the built binary). **No key is embedded yet** — needs a free key from
+  console.curseforge.com — so CurseForge still asks for one until provided.
+  `getConfig` now also returns `curseEnabled` (user OR embedded key) for UI gating.
+
+### v1.0.3 — released (GitHub)
 - **Java-path input focus bug fixed** — moved `Section` out of `SettingsTab`'s
   render to module scope (`instance-tabs.jsx`); typing in the Java path field no
   longer drops focus per keystroke. *Verified live.*

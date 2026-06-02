@@ -108,7 +108,9 @@ function ModrinthScreen() {
   mrE(() => {
     if (!hasBridge) return;
     api.getInstances().then(l => { setInsts(l || []); if ((l || []).length) setInstId(x => x || l[0].id); }).catch(() => {});
-    api.getConfig().then(c => { if (c) setCurseKey(!!c.curseHasKey); }).catch(() => {});
+    // curseEnabled = user key OR the app-wide embedded key, so CurseForge "just
+    // works" for end users even when they never entered a key themselves.
+    api.getConfig().then(c => { if (c) setCurseKey(!!c.curseEnabled); }).catch(() => {});
     // Pre-fill search if navigated here from a "Find on Modrinth" action
     if (window.__cryoModSearch) { setQuery(window.__cryoModSearch); window.__cryoModSearch = null; }
   }, [hasBridge]);

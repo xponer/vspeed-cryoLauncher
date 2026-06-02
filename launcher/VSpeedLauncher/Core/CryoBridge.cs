@@ -1195,10 +1195,22 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private static readonly CurseForgeClient _curse = new();
 
+    /// <summary>The CurseForge key to use: the user's own (Settings) if set,
+    /// otherwise the app-wide key embedded at build time. Empty only when neither
+    /// exists — then CurseForge is unavailable until one is provided.</summary>
+    private string EffectiveCurseKey()
+    {
+        var user = (_config.Data.CurseForgeApiKey ?? "").Trim();
+        return user.Length > 0 ? user : CurseForgeClient.DefaultApiKey;
+    }
+
+    private const string CurseSetupHint =
+        "CurseForge isn't set up. Add a free API key from console.curseforge.com in Settings → Assistant (or embed one app-wide — see CLAUDE.md).";
+
     private async Task<object?> SearchCurseForgeAsync(string query, string instanceId, int offset, string kind)
     {
-        var key = (_config.Data.CurseForgeApiKey ?? "").Trim();
-        if (string.IsNullOrEmpty(key)) return new { ok = false, error = "No CurseForge API key (Settings → Assistant).", hits = Array.Empty<object>() };
+        var key = EffectiveCurseKey();
+        if (string.IsNullOrEmpty(key)) return new { ok = false, error = CurseSetupHint, hits = Array.Empty<object>() };
         var classId = kind == "modpack" ? CurseForgeClient.ClassModpacks : 6;
         try
         {
@@ -1234,8 +1246,8 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private async Task<object?> GetCurseForgeFilesAsync(string projectId, string instanceId)
     {
-        var key = (_config.Data.CurseForgeApiKey ?? "").Trim();
-        if (string.IsNullOrEmpty(key)) return new { ok = false, error = "No CurseForge API key.", versions = Array.Empty<object>() };
+        var key = EffectiveCurseKey();
+        if (string.IsNullOrEmpty(key)) return new { ok = false, error = CurseSetupHint, versions = Array.Empty<object>() };
         try
         {
             var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, _prismDataDir);
@@ -1693,8 +1705,8 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             string? temp = null;
             try
             {
-                var key = (_config.Data.CurseForgeApiKey ?? "").Trim();
-                if (string.IsNullOrEmpty(key)) throw new Exception("CurseForge API key required (Settings → AI Assistant).");
+                var key = EffectiveCurseKey();
+                if (string.IsNullOrEmpty(key)) throw new Exception(CurseSetupHint);
                 if (!long.TryParse(fileId, out var packFileId)) throw new Exception("Invalid file id.");
 
                 Push("modpackProgress", new { phase = "start", message = "Fetching modpack info…" });
@@ -3353,6 +3365,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         aiModel          = _config.Data.AiModel,
         aiAutoApply      = _config.Data.AiAutoApply,
         curseHasKey      = !string.IsNullOrWhiteSpace(_config.Data.CurseForgeApiKey),
+        curseEnabled     = !string.IsNullOrWhiteSpace(EffectiveCurseKey()),
         discordEnabled   = _config.Data.DiscordEnabled,
         discordHasId     = !string.IsNullOrWhiteSpace(_config.Data.DiscordClientId),
         instances        = _config.Data.Instances,
