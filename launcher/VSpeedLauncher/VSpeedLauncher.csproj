@@ -5,6 +5,8 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <RootNamespace>VSpeedLauncher</RootNamespace>
     <AssemblyName>VSpeedLauncher</AssemblyName>
+    <!-- Exe icon (taskbar, Explorer, Start-menu shortcut). Velopack reuses it for the installer/shortcut. -->
+    <ApplicationIcon>cryo.ico</ApplicationIcon>
 
     <!-- App version — bump for each release; Velopack uses it as the SemVer. -->
     <Version>1.0.4</Version>
@@ -42,6 +44,11 @@
     <Content Include="WebUI\**\*" Exclude="WebUI\screenshots\**">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+  </ItemGroup>
+
+  <!-- Also expose the icon as a WPF resource so the window/taskbar can use it. -->
+  <ItemGroup>
+    <Resource Include="cryo.ico" />
   </ItemGroup>
 
   <!-- Use an explicit Program.Main (Velopack runs first), so App.xaml is a Page,

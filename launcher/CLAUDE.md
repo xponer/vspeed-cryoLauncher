@@ -99,6 +99,14 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### Unreleased (committed to `main`, not yet in a release → next is v1.0.5)
+- **App icon** — added `VSpeedLauncher/cryo.ico` (snowflake, blue→purple) as the
+  exe `<ApplicationIcon>` and the WPF `Window.Icon`; `build-release.ps1` already
+  passes it to Velopack for the installer/shortcut. Generated with Pillow.
+- **Landing page** — `docs/` static site hosted on GitHub Pages
+  (https://xponer.github.io/vspeed-cryoLauncher/). Repo was renamed
+  `vspeed-atm10` → `vspeed-cryoLauncher`; site links point to the new name.
+
 ### v1.0.4 — CurseForge "works-for-everyone" groundwork + One-click Optimize
 - **One-click Optimize** (instance Settings → Memory allocation) — a button that
   picks Xmx from the pack's mod count and the machine's physical RAM (leaves OS

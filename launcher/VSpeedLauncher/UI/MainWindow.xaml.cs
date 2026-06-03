@@ -12,6 +12,9 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // Taskbar / Alt-Tab icon (the window has custom chrome, so set it explicitly).
+        try { Icon = System.Windows.Media.Imaging.BitmapFrame.Create(new Uri("pack://application:,,,/cryo.ico", UriKind.Absolute)); }
+        catch { /* icon is optional — never block startup on it */ }
         Loaded += async (_, _) => await InitWebViewAsync();
     }
 
