@@ -261,6 +261,7 @@ public sealed class CryoBridge
         if (method == "searchCurseForge")    return await SearchCurseForgeAsync(args.Str("query"), args.Str("id"), args.Int("offset", 0), args.Str("kind"));
         if (method == "getCurseForgeFiles")  return await GetCurseForgeFilesAsync(args.Str("projectId"), args.Str("id"));
         if (method == "checkForUpdate")      return await CheckForUpdateAsync();
+        if (method == "getModpackInfo")      return await GetModpackInfoAsync(args.Str("id"));
 #pragma warning disable CS8619
         object? result = method switch
         {
@@ -277,7 +278,7 @@ public sealed class CryoBridge
             "getLogs"         => GetLogs(args.Str("id"), args.Int("n", 3000)),
             "getBootTimeline" => GetBootTimeline(args.Str("id")),
             "rebuildCache"    => RebuildCache(args.Str("id")),
-            "launchInstance"  => LaunchInstance(args.Str("id"), args.Bool("vanilla", false)),
+            "launchInstance"  => LaunchInstance(args.Str("id"), args.Bool("vanilla", false), args.Str("joinServer")),
             "startBenchmark"  => StartBenchmark(args.Str("id")),
             "cancelBenchmark" => CancelBenchmark(),
             "selfCheck"       => SelfCheck(),
@@ -324,11 +325,13 @@ public sealed class CryoBridge
             "duplicateInstance"   => DuplicateInstance(args.Str("id")),
             "installModrinthModpack"   => InstallModrinthModpack(args.Str("projectId"), args.Str("versionId"), args.Str("name")),
             "installCurseForgeModpack" => InstallCurseForgeModpack(args.Str("projectId"), args.Str("fileId"), args.Str("name")),
+            "updateModpack"            => UpdateModpack(args.Str("id")),
             // ── Modpack Export / Import ────────────────────────────────────────────
             "exportModpack"       => ExportModpack(args.Str("id")),
             "importModpack"       => ImportModpack(),
             // ── Modrinth ───────────────────────────────────────────────────────────
             "downloadMod"         => DownloadMod(args.Str("id"), args.Str("url"), args.Str("filename"), args.Str("sha512"), args.Str("projectTitle")),
+            "downloadModrinthMod" => DownloadModrinthMod(args.Str("id"), args.Str("projectId"), args.Str("versionId"), args.Str("projectTitle")),
             "checkModUpdates"     => CheckModUpdates(args.Str("id")),
             "updateMod"           => UpdateMod(args.Str("id"), args.Str("oldFile"), args.Str("url"), args.Str("newFilename"), args.Str("sha512")),
             // ── Server list ────────────────────────────────────────────────────────
@@ -344,7 +347,7 @@ public sealed class CryoBridge
             "openWorldsFolder"    => OpenWorldsFolder(args.Str("id")),
             // ── Cryo Engine (CmlLib.Core) ──────────────────────────────────────────
             "installNeoForge"     => InstallNeoForge(args.Str("id"), args.Str("neoForgeVersion")),
-            "launchWithEngine"    => LaunchWithEngine(args.Str("id")),
+            "launchWithEngine"    => LaunchWithEngine(args.Str("id"), args.Str("joinServer")),
             "getEngineStatus"     => GetEngineStatus(args.Str("id")),
             "setEngineSource"     => SetEngineSource(args.Str("id"), args.Str("source")),
             _ => throw new InvalidOperationException($"Unknown method: {method}"),
@@ -721,7 +724,7 @@ public sealed class CryoBridge
 
     // ── Launch / Stop / Hibernate / Wake ──────────────────────────────────────
 
-    private object LaunchInstance(string id, bool vanilla)
+    private object LaunchInstance(string id, bool vanilla, string joinServer = "")
     {
         var inst = _manager.FindById(id)
             ?? throw new InvalidOperationException($"Instance not found: {id}");
@@ -730,8 +733,9 @@ public sealed class CryoBridge
         if (inst.Entry.Source == "cryo" && MicrosoftAccount.Instance.LoggedIn
             && GetStoredEngineVersion(id) != null)
         {
-            Logger.Info($"LaunchInstance({id}): routing to Cryo engine (source=cryo)");
-            return LaunchWithEngine(id);
+            Logger.Info($"LaunchInstance({id}): routing to Cryo engine (source=cryo)"
+                        + (string.IsNullOrWhiteSpace(joinServer) ? "" : $", joining {joinServer}"));
+            return LaunchWithEngine(id, joinServer);
         }
 
         if (_config.Data.AutoHideOnLaunch)
@@ -1305,6 +1309,91 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         return new { ok = true };
     }
 
+    /// <summary>Installs a Modrinth mod version AND its required dependencies
+    /// (resolved to versions compatible with the instance's MC + loader, recursively,
+    /// de-duplicated). Push events: modDownloadProgress / modDownloadDone / modDownloadError.</summary>
+    private object DownloadModrinthMod(string instanceId, string projectId, string versionId, string projectTitle)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(versionId)) throw new Exception("No version selected.");
+                var meta    = InstanceMetaReader.Read(instanceId, _prismDataDir);
+                var modsDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "mods");
+                Directory.CreateDirectory(modsDir);
+
+                var visited  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // project ids handled
+                var depNames = new List<string>();
+                string mainFile = "";
+
+                // Downloads a version node's primary file (skips if already present).
+                async Task<bool> Grab(JsonNode? ver, bool isDep)
+                {
+                    if (ver == null) return false;
+                    var pid = ver["project_id"]?.GetValue<string>() ?? "";
+                    if (!string.IsNullOrEmpty(pid) && !visited.Add(pid)) return false;  // already handled
+                    var files = ver["files"]?.AsArray();
+                    var pf = files?.FirstOrDefault(f => f?["primary"]?.GetValue<bool>() == true)
+                             ?? (files != null && files.Count > 0 ? files[0] : null);
+                    if (pf == null) return false;
+                    var url = pf["url"]?.GetValue<string>() ?? "";
+                    var fn  = pf["filename"]?.GetValue<string>() ?? "";
+                    if (string.IsNullOrEmpty(url) || string.IsNullOrEmpty(fn)) return false;
+                    var leaf = Path.GetFileName(fn);
+                    if (!File.Exists(Path.Combine(modsDir, leaf)))   // skip files already there
+                    {
+                        var sha = pf["hashes"]?["sha512"]?.GetValue<string>();
+                        await _modrinth.DownloadFileAsync(url, fn, sha, modsDir);
+                    }
+                    if (isDep) depNames.Add(Path.GetFileNameWithoutExtension(leaf)); else mainFile = leaf;
+                    return true;
+                }
+
+                // Walks required dependencies breadth-first (capped depth + total).
+                async Task Resolve(JsonNode? ver, int depth)
+                {
+                    if (ver == null || depth > 5 || depNames.Count >= 60) return;
+                    var deps = ver["dependencies"]?.AsArray();
+                    if (deps == null) return;
+                    foreach (var dep in deps)
+                    {
+                        if ((dep?["dependency_type"]?.GetValue<string>() ?? "") != "required") continue;
+                        var dvid = dep?["version_id"]?.GetValue<string>();
+                        var dpid = dep?["project_id"]?.GetValue<string>();
+                        if (!string.IsNullOrEmpty(dpid) && visited.Contains(dpid)) continue;
+                        JsonNode? dver = null;
+                        try
+                        {
+                            if (!string.IsNullOrWhiteSpace(dvid))
+                                dver = await _modrinth.GetVersionAsync(dvid!);
+                            else if (!string.IsNullOrWhiteSpace(dpid))
+                                dver = (await _modrinth.GetVersionsAsync(dpid!, meta.Mc, meta.Loader) as JsonArray)?.FirstOrDefault();
+                        }
+                        catch (Exception de) { Logger.Warn($"dep {dpid}/{dvid}: {de.Message}"); continue; }
+                        if (dver == null) continue;
+                        Push("modDownloadProgress", new { message = $"Adding dependency: {dver["name"]?.GetValue<string>() ?? dpid}" });
+                        if (await Grab(dver, true)) await Resolve(dver, depth + 1);
+                    }
+                }
+
+                Push("modDownloadProgress", new { message = $"Installing {projectTitle}…" });
+                var main = await _modrinth.GetVersionAsync(versionId) ?? throw new Exception("Could not fetch version.");
+                await Grab(main, false);
+                await Resolve(main, 0);
+
+                Logger.Info($"DownloadModrinthMod({instanceId}): {projectTitle} + {depNames.Count} dep(s)");
+                Push("modDownloadDone", new { ok = true, projectTitle, filename = mainFile, deps = depNames, depCount = depNames.Count });
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"DownloadModrinthMod({instanceId}): {e.Message}");
+                Push("modDownloadError", new { error = e.Message, projectTitle });
+            }
+        });
+        return new { ok = true };
+    }
+
     /// <summary>Hashes every installed jar and asks Modrinth which have newer versions.
     /// Push events: modUpdatesProgress / modUpdatesDone / modUpdatesError.</summary>
     private object CheckModUpdates(string instanceId)
@@ -1525,6 +1614,232 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         return instanceDir;
     }
 
+    // ── Modpack source tracking + update ─────────────────────────────────────────
+
+    private string PackJsonPath(string id) => Path.Combine(_prismDataDir, "instances", id, "cryo-pack.json");
+
+    /// <summary>Remembers which Modrinth/CurseForge pack (and version) an instance came
+    /// from, so it can be updated later.</summary>
+    private void StorePackSource(string id, string source, string projectId, string versionId, string name)
+    {
+        try
+        {
+            File.WriteAllText(PackJsonPath(id), new JsonObject
+            {
+                ["source"] = source, ["projectId"] = projectId, ["versionId"] = versionId, ["name"] = name,
+            }.ToJsonString());
+        }
+        catch (Exception e) { Logger.Warn($"StorePackSource({id}): {e.Message}"); }
+    }
+
+    private JsonNode? ReadPackSource(string id)
+    {
+        try { var p = PackJsonPath(id); return File.Exists(p) ? JsonNode.Parse(File.ReadAllText(p)) : null; }
+        catch { return null; }
+    }
+
+    private void WriteMmcPack(string instanceDir, string mc, string loader, string loaderVer)
+    {
+        var components = new JsonArray { new JsonObject { ["uid"] = "net.minecraft", ["version"] = mc } };
+        switch ((loader ?? "").ToLowerInvariant())
+        {
+            case "neoforge": components.Add(new JsonObject { ["uid"] = "net.neoforged",             ["version"] = loaderVer }); break;
+            case "forge":    components.Add(new JsonObject { ["uid"] = "net.minecraftforge",         ["version"] = loaderVer }); break;
+            case "fabric":   components.Add(new JsonObject { ["uid"] = "net.fabricmc.fabric-loader", ["version"] = loaderVer }); break;
+            case "quilt":    components.Add(new JsonObject { ["uid"] = "org.quiltmc.quilt-loader",   ["version"] = loaderVer }); break;
+        }
+        File.WriteAllText(Path.Combine(instanceDir, "mmc-pack.json"),
+            new JsonObject { ["components"] = components, ["formatVersion"] = 1 }.ToJsonString());
+    }
+
+    /// <summary>Reports the instance's modpack source and whether a newer version exists.</summary>
+    private async Task<object?> GetModpackInfoAsync(string id)
+    {
+        var src = ReadPackSource(id);
+        if (src == null) return new { hasSource = false };
+        var source    = src["source"]?.GetValue<string>() ?? "";
+        var projectId = src["projectId"]?.GetValue<string>() ?? "";
+        var curVer    = src["versionId"]?.GetValue<string>() ?? "";
+        var name      = src["name"]?.GetValue<string>() ?? "";
+        var meta      = InstanceMetaReader.Read(id, _prismDataDir);
+        try
+        {
+            string latestId = "", latestName = "";
+            if (source == "modrinth")
+            {
+                var v = (await _modrinth.GetVersionsAsync(projectId, meta.Mc, meta.Loader) as JsonArray)?.FirstOrDefault();
+                latestId   = v?["id"]?.GetValue<string>() ?? "";
+                latestName = v?["version_number"]?.GetValue<string>() ?? v?["name"]?.GetValue<string>() ?? "";
+            }
+            else if (source == "curseforge")
+            {
+                var key = EffectiveCurseKey();
+                if (!string.IsNullOrEmpty(key))
+                {
+                    var d = (await _curse.GetFilesAsync(key, projectId, meta.Mc, meta.Loader))?["data"]?.AsArray();
+                    var v = d?.OrderByDescending(x => x?["fileDate"]?.GetValue<string>() ?? "").FirstOrDefault();
+                    latestId   = (v?["id"]?.GetValue<long>() ?? 0).ToString();
+                    latestName = v?["displayName"]?.GetValue<string>() ?? "";
+                }
+            }
+            return new
+            {
+                hasSource = true, source, name, projectId,
+                currentVersionId = curVer, latestVersionId = latestId, latestName,
+                updateAvailable = !string.IsNullOrEmpty(latestId) && latestId != curVer && !string.IsNullOrEmpty(curVer),
+            };
+        }
+        catch (Exception e) { Logger.Warn($"GetModpackInfo({id}): {e.Message}"); return new { hasSource = true, source, name, error = e.Message }; }
+    }
+
+    /// <summary>Updates an installed modpack to its latest version in place. Old mods are
+    /// MOVED to a timestamped backup (never deleted) and worlds (saves/) are left untouched.
+    /// Push events: modpackProgress / modpackDone.</summary>
+    private object UpdateModpack(string id)
+    {
+        _ = Task.Run(async () =>
+        {
+            string? temp = null;
+            try
+            {
+                var src = ReadPackSource(id) ?? throw new Exception("This instance has no known modpack source to update.");
+                var source    = src["source"]?.GetValue<string>() ?? "";
+                var projectId  = src["projectId"]?.GetValue<string>() ?? "";
+                var name      = src["name"]?.GetValue<string>() ?? "Modpack";
+                var meta      = InstanceMetaReader.Read(id, _prismDataDir);
+                var instanceDir = Path.Combine(_prismDataDir, "instances", id);
+                var mcDir   = Path.Combine(instanceDir, "minecraft");
+                var modsDir = Path.Combine(mcDir, "mods");
+
+                Push("modpackProgress", new { phase = "start", message = "Finding the latest version…" });
+
+                string mc = meta.Mc, loader = meta.Loader, loaderVer = "", newVer = "";
+                int total = 0, failed = 0, done = 0;
+
+                // Back up the current mods (MOVE, fully reversible) — worlds stay put.
+                if (Directory.Exists(modsDir) && Directory.EnumerateFileSystemEntries(modsDir).Any())
+                {
+                    var bak = Path.Combine(mcDir, "mods.bak-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+                    Directory.Move(modsDir, bak);
+                    Logger.Info($"UpdateModpack({id}): backed up mods → {Path.GetFileName(bak)}");
+                }
+                Directory.CreateDirectory(modsDir);
+
+                if (source == "modrinth")
+                {
+                    var v = (await _modrinth.GetVersionsAsync(projectId, meta.Mc, meta.Loader) as JsonArray)?.FirstOrDefault()
+                            ?? throw new Exception("No matching versions found on Modrinth.");
+                    newVer = v["id"]?.GetValue<string>() ?? "";
+                    var files = v["files"]?.AsArray();
+                    var primary = files?.FirstOrDefault(f => f?["primary"]?.GetValue<bool>() == true) ?? (files != null && files.Count > 0 ? files[0] : null);
+                    var mrUrl = primary?["url"]?.GetValue<string>() ?? throw new Exception("No .mrpack file in the latest version.");
+                    temp = Path.Combine(Path.GetTempPath(), "cryo-upd-" + Guid.NewGuid().ToString("N") + ".mrpack");
+                    Push("modpackProgress", new { phase = "download", message = "Downloading update…" });
+                    await DownloadToFileAsync(mrUrl, temp);
+
+                    JsonArray? indexFiles = null;
+                    using (var z = System.IO.Compression.ZipFile.OpenRead(temp))
+                    {
+                        var idx = z.GetEntry("modrinth.index.json") ?? throw new Exception("Invalid .mrpack.");
+                        using var sr = new StreamReader(idx.Open());
+                        var node = JsonNode.Parse(sr.ReadToEnd());
+                        var deps = node?["dependencies"]?.AsObject();
+                        if (deps != null)
+                        {
+                            mc = deps["minecraft"]?.GetValue<string>() ?? mc;
+                            if (deps["neoforge"] != null)           { loader = "NeoForge"; loaderVer = deps["neoforge"]!.GetValue<string>(); }
+                            else if (deps["forge"] != null)         { loader = "Forge";    loaderVer = deps["forge"]!.GetValue<string>(); }
+                            else if (deps["fabric-loader"] != null) { loader = "Fabric";   loaderVer = deps["fabric-loader"]!.GetValue<string>(); }
+                            else if (deps["quilt-loader"] != null)  { loader = "Quilt";    loaderVer = deps["quilt-loader"]!.GetValue<string>(); }
+                        }
+                        indexFiles = node?["files"]?.AsArray();
+                    }
+                    total = indexFiles?.Count ?? 0;
+                    if (indexFiles != null)
+                        foreach (var f in indexFiles)
+                        {
+                            var path = f?["path"]?.GetValue<string>() ?? "";
+                            var dls  = f?["downloads"]?.AsArray();
+                            if (string.IsNullOrEmpty(path) || dls == null || dls.Count == 0) { done++; continue; }
+                            var dest = Path.GetFullPath(Path.Combine(mcDir, path));
+                            if (!dest.StartsWith(mcDir, StringComparison.OrdinalIgnoreCase)) { done++; continue; }
+                            try { await DownloadToFileAsync(dls[0]!.GetValue<string>(), dest); }
+                            catch (Exception fe) { failed++; Logger.Warn($"upd file '{path}': {fe.Message}"); }
+                            done++;
+                            Push("modpackProgress", new { phase = "files", message = $"Downloading mods… {done}/{total}", done, total });
+                        }
+                    using (var z = System.IO.Compression.ZipFile.OpenRead(temp)) ExtractOverrides(z, mcDir);
+                }
+                else if (source == "curseforge")
+                {
+                    var key = EffectiveCurseKey();
+                    if (string.IsNullOrEmpty(key)) throw new Exception(CurseSetupHint);
+                    var d = (await _curse.GetFilesAsync(key, projectId, meta.Mc, meta.Loader))?["data"]?.AsArray();
+                    var latest = d?.OrderByDescending(x => x?["fileDate"]?.GetValue<string>() ?? "").FirstOrDefault()
+                                 ?? throw new Exception("No files found on CurseForge.");
+                    var packFileId = latest["id"]?.GetValue<long>() ?? 0;
+                    newVer = packFileId.ToString();
+                    var packMap = await _curse.GetFilesByIdsAsync(key, new[] { packFileId });
+                    if (!packMap.TryGetValue(packFileId, out var pf) || string.IsNullOrEmpty(pf.url))
+                        throw new Exception("Modpack download not available from CurseForge.");
+                    temp = Path.Combine(Path.GetTempPath(), "cryo-upd-" + Guid.NewGuid().ToString("N") + ".zip");
+                    Push("modpackProgress", new { phase = "download", message = "Downloading update…" });
+                    await DownloadToFileAsync(pf.url!, temp);
+
+                    var projectFileIds = new List<(long projectId, long fileId)>();
+                    using (var z = System.IO.Compression.ZipFile.OpenRead(temp))
+                    {
+                        var man = z.GetEntry("manifest.json") ?? throw new Exception("Invalid CurseForge pack (no manifest.json).");
+                        using var sr = new StreamReader(man.Open());
+                        var node = JsonNode.Parse(sr.ReadToEnd());
+                        mc = node?["minecraft"]?["version"]?.GetValue<string>() ?? mc;
+                        var ml = node?["minecraft"]?["modLoaders"]?.AsArray();
+                        var prim = ml?.FirstOrDefault(x => x?["primary"]?.GetValue<bool>() == true) ?? (ml != null && ml.Count > 0 ? ml[0] : null);
+                        var lid = prim?["id"]?.GetValue<string>() ?? ""; var dash = lid.IndexOf('-');
+                        if (dash > 0) { var pfx = lid[..dash].ToLowerInvariant(); loaderVer = lid[(dash + 1)..]; loader = pfx switch { "neoforge" => "NeoForge", "forge" => "Forge", "fabric" => "Fabric", "quilt" => "Quilt", _ => loader }; }
+                        var fl = node?["files"]?.AsArray();
+                        if (fl != null) foreach (var f in fl) { var pid = f?["projectID"]?.GetValue<long>() ?? 0; var fid = f?["fileID"]?.GetValue<long>() ?? 0; if (pid > 0 && fid > 0) projectFileIds.Add((pid, fid)); }
+                    }
+                    total = projectFileIds.Count;
+                    var urlMap = await _curse.GetFilesByIdsAsync(key, projectFileIds.Select(p => p.fileId));
+                    foreach (var (_, fid) in projectFileIds)
+                    {
+                        urlMap.TryGetValue(fid, out var info);
+                        var fname = info.fileName; var url = info.url;
+                        if (string.IsNullOrEmpty(url) && !string.IsNullOrEmpty(fname)) url = CurseForgeClient.FallbackUrl(fid, fname);
+                        if (!string.IsNullOrEmpty(url) && !string.IsNullOrEmpty(fname))
+                        {
+                            try { await DownloadToFileAsync(url, Path.Combine(modsDir, Path.GetFileName(fname))); }
+                            catch (Exception fe) { failed++; Logger.Warn($"upd cf {fid}: {fe.Message}"); }
+                        }
+                        else failed++;
+                        done++;
+                        Push("modpackProgress", new { phase = "files", message = $"Downloading mods… {done}/{total}", done, total });
+                    }
+                    using (var z = System.IO.Compression.ZipFile.OpenRead(temp)) ExtractOverrides(z, mcDir);
+                }
+                else throw new Exception("Unknown modpack source.");
+
+                // Persist the new MC/loader + remembered version, then reinstall the loader.
+                WriteMmcPack(instanceDir, mc, loader, loaderVer);
+                StorePackSource(id, source, projectId, newVer, name);
+                Push("modpackProgress", new { phase = "loader", message = $"Installing {loader} {loaderVer}…" });
+                if (loader.Equals("Vanilla", StringComparison.OrdinalIgnoreCase)) StoreEngineVersion(id, mc);
+                else InstallLoaderForInstance(id, mc, loader, loaderVer);
+
+                Logger.Info($"UpdateModpack({id}): → {newVer} ({total} files, {failed} failed)");
+                Push("modpackDone", new { ok = true, id, name, updated = true, files = total, failed });
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"UpdateModpack({id}): {e.Message}");
+                Push("modpackDone", new { ok = false, error = e.Message });
+            }
+            finally { try { if (temp != null) File.Delete(temp); } catch { } }
+        });
+        return new { ok = true };
+    }
+
     /// <summary>Registers a Cryo-native instance in config + the live manager.</summary>
     private void RegisterInstance(string id, string name)
     {
@@ -1665,6 +1980,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 var id = MakeInstanceId(name);
                 var instanceDir = CreateInstanceFolder(id, name, mc, loader, loaderVer, 6144);
                 var mcDir = Path.Combine(instanceDir, "minecraft");
+                StorePackSource(id, "modrinth", projectId, versionId, name);
 
                 int total = indexFiles?.Count ?? 0, done = 0, failed = 0;
                 if (indexFiles != null)
@@ -1752,6 +2068,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 var instanceDir = CreateInstanceFolder(id, name, mc, loader, loaderVer, 6144);
                 var mcDir = Path.Combine(instanceDir, "minecraft");
                 var modsDir = Path.Combine(mcDir, "mods");
+                StorePackSource(id, "curseforge", projectId, fileId, name);
 
                 // Resolve all file download URLs in one bulk call.
                 Push("modpackProgress", new { phase = "resolve", message = $"Resolving {projectFileIds.Count} mods…" });
@@ -2687,6 +3004,34 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         return 8;                                         // ≤ 1.16 → Java 8
     }
 
+    /// <summary>Game args that make Minecraft connect to a server on launch.
+    /// 1.20+ uses --quickPlayMultiplayer; older versions use --server/--port.</summary>
+    private static List<CmlLib.Core.ProcessBuilder.MArgument> BuildJoinGameArgs(string mc, string ip)
+    {
+        var list = new List<CmlLib.Core.ProcessBuilder.MArgument>();
+        ip = (ip ?? "").Trim();
+        if (ip.Length == 0) return list;
+        int minor = 0;
+        var parts = (mc ?? "").Split('.');
+        if (parts.Length >= 2) int.TryParse(parts[1], out minor);
+        if (minor >= 20)   // 1.20+ — Quick Play (single address argument)
+        {
+            list.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine("--quickPlayMultiplayer"));
+            list.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine(ip));
+        }
+        else               // legacy --server <host> --port <port>
+        {
+            string host = ip, port = "25565";
+            var c = ip.LastIndexOf(':');
+            if (c > 0 && c < ip.Length - 1) { host = ip[..c]; port = ip[(c + 1)..]; }
+            list.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine("--server"));
+            list.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine(host));
+            list.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine("--port"));
+            list.Add(CmlLib.Core.ProcessBuilder.MArgument.FromCommandLine(port));
+        }
+        return list;
+    }
+
     /// <summary>
     /// Finds an already-installed Mojang JRE (<c>javaw.exe</c>) matching a Java
     /// major version under the engine's runtime dir, or <c>null</c> if none is
@@ -3034,7 +3379,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     /// The instance's own .minecraft folder (mods, config, saves) is passed as gameDir.
     /// Push events: engineProgress / engineError.
     /// </summary>
-    private object LaunchWithEngine(string instanceId)
+    private object LaunchWithEngine(string instanceId, string joinServer = "")
     {
         _ = Task.Run(async () =>
         {
@@ -3130,9 +3475,14 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                     else Logger.Info($"Java: no bundled Java {javaMajor} on disk yet — letting CmlLib resolve/download");
                 }
 
+                // "Join server": pass quickPlay/server args so the game connects on launch.
+                var extraGame = BuildJoinGameArgs(meta.Mc, joinServer);
+                if (extraGame.Count > 0) Push("engineProgress", new { phase = "join", message = $"Will join {joinServer} on launch…" });
+
                 var proc = await core.InstallAndLaunchAsync(
                     versionName, session, meta.RamMax > 0 ? meta.RamMax : 4096,
-                    gameDir: gameDir, javaPath: javaExe, extraJvmArgs: extraJvm, stdoutLog: engineLog);
+                    gameDir: gameDir, javaPath: javaExe, extraJvmArgs: extraJvm, stdoutLog: engineLog,
+                    extraGameArgs: extraGame);
 
                 inst.PrismProcess = proc;
                 inst.Notify();

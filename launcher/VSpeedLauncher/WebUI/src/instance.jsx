@@ -8,7 +8,7 @@ const { useApp: useApp } = window.CryoStore;
 function InstanceDetail({ id, initialTab, autoLaunch }) {
   const { api, hasBridge, t, fmt, navigate } = useApp();
   const { OverviewTab } = window.CryoOverview;
-  const { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard } = window.CryoInstanceTabs;
+  const { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard } = window.CryoInstanceTabs;
 
   const [state, setState] = dS("loading");
   const [data, setData] = dS(null);
@@ -261,6 +261,7 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
       tab === "servers"     && React.createElement(ServersTab, { instance, api, hasBridge }),
       tab === "settings"    && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } },
         React.createElement(ProfileApplyCard, { instance, api, hasBridge }),
+        React.createElement(ModpackUpdateCard, { instance, api, hasBridge }),
         React.createElement(ModpackIOCard, { instance, api, hasBridge }),
         React.createElement(SettingsTab, { instance, t, fmt, api, hasBridge }),
       ),

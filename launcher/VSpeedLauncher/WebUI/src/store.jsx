@@ -217,6 +217,7 @@ function createBridgeApi() {
     async getBootTimeline(id)        { return call("getBootTimeline", { id }, 20000); },
     async rebuildCache(id)             { return call("rebuildCache", { id }); },
     async launchInstance(id, vanilla)  { return call("launchInstance", { id, vanilla: !!vanilla }); },
+    async joinServer(id, ip)           { return call("launchInstance", { id, joinServer: ip }); },
     async startBenchmark(id)           { return call("startBenchmark", { id }); },
     async cancelBenchmark()            { return call("cancelBenchmark"); },
     // AI assistant — { messages:[{role,content}], instanceId?, attach?:["logs","mods","crash","launcher"] }
@@ -279,8 +280,13 @@ function createBridgeApi() {
     async duplicateInstance(id)        { return call("duplicateInstance", { id }); },
     async installModrinthModpack(projectId, versionId, name) { return call("installModrinthModpack", { projectId, versionId, name: name || "" }); },
     async installCurseForgeModpack(projectId, fileId, name)  { return call("installCurseForgeModpack", { projectId, fileId, name: name || "" }); },
+    async getModpackInfo(id)              { return call("getModpackInfo",  { id }, 30000); },
+    async updateModpack(id)               { return call("updateModpack",   { id }); },
     async downloadMod(id, url, filename, sha512, projectTitle) {
       return call("downloadMod", { id, url, filename, sha512: sha512 || "", projectTitle: projectTitle || "" });
+    },
+    async downloadModrinthMod(id, projectId, versionId, projectTitle) {
+      return call("downloadModrinthMod", { id, projectId, versionId, projectTitle: projectTitle || "" });
     },
     async checkModUpdates(id)             { return call("checkModUpdates", { id }, 90000); },
     async updateMod(id, oldFile, url, newFilename, sha512) {

@@ -162,6 +162,7 @@ public sealed class LauncherCore
         string? javaPath = null,
         IEnumerable<MArgument>? extraJvmArgs = null,
         string? stdoutLog = null,
+        IEnumerable<MArgument>? extraGameArgs = null,
         CancellationToken ct = default)
     {
         // Libraries/versions live in _root; game dir (mods/config/saves) is separate.
@@ -176,13 +177,16 @@ public sealed class LauncherCore
             MaximumRamMb = ramMb > 0 ? ramMb : 4096,
         };
         if (!string.IsNullOrWhiteSpace(javaPath)) opt.JavaPath = javaPath;
-        // --gameDir tells Minecraft/NeoForge where to find mods, config, saves.
+        // --gameDir tells Minecraft/NeoForge where to find mods, config, saves;
+        // extraGameArgs carries e.g. --quickPlayMultiplayer for "Join server".
+        var gameArgs = new List<MArgument>();
         if (!string.IsNullOrWhiteSpace(gameDir))
-            opt.ExtraGameArguments = new[]
-            {
-                MArgument.FromCommandLine("--gameDir"),
-                MArgument.FromCommandLine(gameDir),
-            };
+        {
+            gameArgs.Add(MArgument.FromCommandLine("--gameDir"));
+            gameArgs.Add(MArgument.FromCommandLine(gameDir));
+        }
+        if (extraGameArgs != null) gameArgs.AddRange(extraGameArgs);
+        if (gameArgs.Count > 0) opt.ExtraGameArguments = gameArgs;
         if (extraJvmArgs != null) opt.ExtraJvmArguments = extraJvmArgs;
 
         var proc = await launcher.InstallAndBuildProcessAsync(versionId, opt, ct);

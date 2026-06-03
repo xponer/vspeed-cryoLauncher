@@ -99,6 +99,26 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### Working tree — NOT committed yet (the user pushes manually)
+- **Mod dependency auto-resolver** — installing a Modrinth mod now also pulls its
+  required dependencies (`DownloadModrinthMod` C# / `downloadModrinthMod` bridge),
+  recursively + de-duped (depth ≤5, ≤60 deps); the toast shows "+N dependencies".
+  CurseForge mods still install as a single file.
+- **Servers: Join + live status** — the Servers tab gained a **Join** button that
+  launches the instance straight into the server: `--quickPlayMultiplayer <ip>` on
+  MC 1.20+, else `--server`/`--port` (`BuildJoinGameArgs`). Threaded through
+  `LaunchInstance`/`LaunchWithEngine` → `InstallAndLaunchAsync(extraGameArgs:)`.
+  (Live ping / MOTD / player count was already displayed.)
+- **Modpack update** — `cryo-pack.json` now records the install source (Modrinth/CF
+  project + version); `getModpackInfo` checks for a newer version; **Update**
+  re-installs the latest into the instance, MOVING old mods to `mods.bak-<ts>`
+  (reversible) and leaving `saves/` untouched. New "Modpack" card in instance Settings.
+- **og:image PNG** — `docs/og.png` (Pillow-drawn banner) replaces the SVG so link
+  previews show an image; absolute `og:image` + `twitter:image`. Removed `docs/og.svg`.
+- ⚠️ All of the above **build cleanly + pass `node --check`, but are NOT GUI-tested**
+  (computer-use was unavailable). Verify in the app before relying on them —
+  especially Modpack update (old mods are backed up, so it's recoverable).
+
 ### Unreleased (committed to `main`, not yet in a release → next is v1.0.5)
 - **App icon** — added `VSpeedLauncher/cryo.ico` (snowflake, blue→purple) as the
   exe `<ApplicationIcon>` and the WPF `Window.Icon`; `build-release.ps1` already

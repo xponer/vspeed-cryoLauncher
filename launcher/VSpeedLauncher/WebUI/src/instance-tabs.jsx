@@ -1328,6 +1328,12 @@ function ServersTab({ instance, api, hasBridge }) {
     if (r && r.ok) { window.toast({ tone: "neutral", icon: "trash", title: "Removed" }); load(); }
   }
 
+  async function join(ip) {
+    const r = await api.joinServer(instance.id, ip).catch(e => ({ ok: false, error: String(e) }));
+    if (r && r.ok) window.toast({ tone: "success", icon: "zap", title: "Launching", body: "Joining " + ip + " on start…" });
+    else window.toast({ tone: "danger", icon: "alert", title: "Couldn't launch", body: (r && r.error) || "Sign in and install the instance first." });
+  }
+
   const dot = (s) => {
     if (!s || s.pinging) return { c: "var(--warn)", t: "…" };
     if (s.online) return { c: "var(--success)", t: (s.latencyMs != null ? s.latencyMs + "ms" : "online") };
@@ -1365,6 +1371,8 @@ function ServersTab({ instance, api, hasBridge }) {
               st && st.online && React.createElement("span", { className: "tnum", style: { fontSize: 11.5, color: "var(--text-dim)", flexShrink: 0 } },
                 st.players + "/" + st.maxPlayers),
               React.createElement("span", { className: "tnum", style: { fontSize: 11, color: d.c, minWidth: 52, textAlign: "right", flexShrink: 0 } }, d.t),
+              React.createElement(Tip, { label: "Launch this instance and connect" },
+                React.createElement(Btn, { variant: "primary", size: "sm", icon: "zap", onClick: () => join(s.ip) }, "Join")),
               React.createElement(Tip, { label: "Re-ping" },
                 React.createElement(Btn, { variant: "ghost", size: "icon", onClick: () => ping(s.ip) }, React.createElement(Icon, { name: "refresh", size: 14 }))),
               React.createElement(Tip, { label: "Remove" },
@@ -1421,4 +1429,51 @@ function ProfileApplyCard({ instance, api, hasBridge }) {
   );
 }
 
-window.CryoInstanceTabs = { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard };
+/* ============ MODPACK UPDATE (used in instance SettingsTab) ============ */
+function ModpackUpdateCard({ instance, api, hasBridge }) {
+  const [info, setInfo] = tS(null);     // null=loading; {hasSource:false} = not a Cryo-installed pack
+  const [busy, setBusy] = tS(false);
+  const startedRef = tRf(false);
+
+  async function refresh() {
+    if (!hasBridge || !api.getModpackInfo) { setInfo({ hasSource: false }); return; }
+    const r = await api.getModpackInfo(instance.id).catch(() => ({ hasSource: false }));
+    setInfo(r || { hasSource: false });
+  }
+  tE(() => { refresh(); }, [hasBridge, instance.id]);
+
+  tE(() => {
+    function onDone(e) {
+      if (!startedRef.current) return;          // ignore install events from elsewhere
+      startedRef.current = false; setBusy(false);
+      const d = e.detail || {};
+      if (d.ok) { window.toast({ tone: "success", icon: "check", title: "Modpack updated", body: "Old mods were moved to a mods.bak-… folder; worlds kept." }); refresh(); }
+      else window.toast({ tone: "danger", icon: "alert", title: "Update failed", body: d.error || "" });
+    }
+    window.addEventListener("cryo:modpackDone", onDone);
+    return () => window.removeEventListener("cryo:modpackDone", onDone);
+  }, [instance.id]);
+
+  async function doUpdate() {
+    if (!window.confirm("Update this modpack to the latest version?\n\nYour current mods are moved to a backup folder (mods.bak-…) and your worlds are kept. Pack config files may be overwritten.")) return;
+    startedRef.current = true; setBusy(true);
+    await api.updateModpack(instance.id).catch(e => {
+      startedRef.current = false; setBusy(false);
+      window.toast({ tone: "danger", icon: "alert", title: "Update failed", body: String(e) });
+    });
+  }
+
+  if (!hasBridge || !info || !info.hasSource) return null;
+  const upd = info.updateAvailable;
+  return React.createElement(Section, { icon: "package", title: "Modpack",
+      desc: info.name ? ((info.source === "curseforge" ? "CurseForge" : "Modrinth") + " · " + info.name) : undefined },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" } },
+      React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: upd ? "var(--warn)" : "var(--text-dim)" } },
+        info.error ? "Couldn't check for updates" : (upd ? ("Update available" + (info.latestName ? ": " + info.latestName : "")) : "Up to date")),
+      React.createElement("div", { style: { flex: 1 } }),
+      React.createElement(Btn, { variant: "ghost", size: "sm", icon: "refresh", onClick: refresh, disabled: busy }, "Check"),
+      upd && React.createElement(Btn, { variant: "primary", size: "sm", icon: busy ? "refresh" : "download", iconSpin: busy, disabled: busy, onClick: doUpdate }, busy ? "Updating…" : "Update")),
+  );
+}
+
+window.CryoInstanceTabs = { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard };

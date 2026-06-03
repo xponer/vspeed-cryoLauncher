@@ -40,7 +40,11 @@ function ModCard({ hit, instId, api, source, kind, onModpackInstall }) {
     }
     if (!instId) { window.toast({ tone: "warn", icon: "info", title: "Pick an instance first" }); return; }
     setInst(v.versionId);
-    await api.downloadMod(instId, v.url, v.filename, v.sha512, hit.title).catch(e =>
+    // Modrinth: also auto-installs required dependencies. CurseForge: single file.
+    const dl = source === "curseforge"
+      ? api.downloadMod(instId, v.url, v.filename, v.sha512, hit.title)
+      : api.downloadModrinthMod(instId, hit.projectId, v.versionId, hit.title);
+    await dl.catch(e =>
       window.toast({ tone: "danger", icon: "alert", title: "Download error", body: String(e) }));
     // Done/Error arrive via push events handled by parent; clear local spinner after a beat.
     setTimeout(() => setInst(""), 600);
@@ -119,7 +123,11 @@ function ModrinthScreen() {
   mrE(() => {
     function onDone(e) {
       const d = e.detail || {};
-      window.toast({ tone: "success", icon: "check", title: "Installed", body: d.filename + (d.projectTitle ? " (" + d.projectTitle + ")" : "") });
+      const n = d.depCount || 0;
+      const depMsg = n > 0 ? " · +" + n + " dependenc" + (n === 1 ? "y" : "ies") : "";
+      window.toast({ tone: "success", icon: "check",
+        title: n > 0 ? "Installed with dependencies" : "Installed",
+        body: (d.projectTitle || d.filename || "") + depMsg });
     }
     function onErr(e) {
       const d = e.detail || {};
