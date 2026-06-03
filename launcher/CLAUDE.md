@@ -101,6 +101,23 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### v1.0.7 — released (GitHub) — UX fixes from tester feedback
+- **Dialogs no longer close on drag-release** — modal backdrops (New instance, Delete,
+  command palette) closed on `onClick` (= mouse-up), so pressing inside and releasing over
+  the backdrop (dragging a slider, selecting text) dismissed them. Now they close only on a
+  `mousedown` that *starts* on the backdrop (`onMouseDown` + `e.target===e.currentTarget`).
+- **Menu reliably closes on outside click** — the `Menu` popover's outside-close used a
+  one-shot `{ once: true }` mousedown listener that could be consumed without closing;
+  replaced with a normal listener removed on cleanup (now matches `Select`).
+- **RAM sliders capped to installed RAM** — removed the hardcoded `max: 32768` from the
+  New-instance dialog, the global default (Settings), and the profile editor; all now cap at
+  the machine's physical RAM via a shared `useSysRamMb(api)` hook in `ui.jsx` (the
+  per-instance Settings slider already did this). Values clamp down on smaller machines.
+- **Portable build surfaced** — every release already ships `Cryo-win-Portable.zip` (extract
+  anywhere = choose your own folder); documented in the README. Installer stays **Velopack**
+  (per-user `%LocalAppData%\Cryo`, seamless auto-update) — Velopack has no install-dir picker
+  by design; the portable zip is the "custom location" path.
+
 ### v1.0.6 — released (GitHub) — tray polish + repo cleanup
 - **Tray icon fixed** — the system-tray icon now uses the app's own `cryo.ico` (loaded
   from the embedded WPF resource, multi-resolution) instead of the generic

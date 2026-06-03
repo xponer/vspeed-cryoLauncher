@@ -88,6 +88,7 @@ function JavaSection({ settings, update, t, api, hasBridge }) {
   // Bridge-backed launcher config
   const [cfg, setCfg] = sgS(null);
   const [saving, setSaving] = sgS(false);
+  const sysRam = useSysRamMb(api);
 
   sgE(() => {
     if (!hasBridge) return;
@@ -111,7 +112,7 @@ function JavaSection({ settings, update, t, api, hasBridge }) {
     React.createElement(Row, { label: t("set.java") },
       React.createElement(Select, { value: java, onChange: setJava, size: "sm", width: 220, options: ["Java 17 (Temurin)", "Java 21 (Temurin)", "Java 21 (Graal)", "Auto-detect"] })),
     React.createElement(Row, { label: t("set.ramMax") },
-      React.createElement("div", { style: { width: 280 } }, React.createElement(Slider, { value: ram, min: 2048, max: 32768, step: 512, onChange: v => { setRam(v); saveCfg({ defaultRamMax: v }); }, format: v => (v / 1024).toFixed(1) + " GB" }))),
+      React.createElement("div", { style: { width: 280 } }, React.createElement(Slider, { value: Math.min(ram, maxRamMb(sysRam)), min: 2048, max: maxRamMb(sysRam), step: 512, onChange: v => { setRam(v); saveCfg({ defaultRamMax: v }); }, format: v => (v / 1024).toFixed(1) + " GB" }))),
     React.createElement(Row, { label: t("set.preset") },
       React.createElement(Select, { value: preset, onChange: v => { setPreset(v); saveCfg({ defaultJvmPreset: v }); }, size: "sm", width: 220, options: Object.keys(api.presets) })),
     React.createElement(Row, { label: t("status.engine"), desc: t("perf.toggleOn") },
@@ -542,6 +543,7 @@ const PROFILE_ICONS = ["zap", "gauge", "feather", "activity", "cpu", "package", 
 function ProfilesSection({ t, api, hasBridge }) {
   const [profiles, setProfiles] = sgS([]);
   const [editing, setEditing]   = sgS(null);  // profile object being edited, or {} for new, or null
+  const sysRam = useSysRamMb(api);
 
   async function load() {
     if (!hasBridge) return;
@@ -582,7 +584,7 @@ function ProfilesSection({ t, api, hasBridge }) {
         }, React.createElement(Icon, { name: ic, size: 15 })))),
     ),
     React.createElement(Row, { label: "Max RAM", desc: (editing.ramMax / 1024).toFixed(1) + " GB" },
-      React.createElement(Slider, { value: editing.ramMax, min: 1024, max: 32768, step: 512, onChange: v => setEditing(e => ({ ...e, ramMax: v })), format: v => (v / 1024).toFixed(1) + "G" })),
+      React.createElement(Slider, { value: Math.min(editing.ramMax, maxRamMb(sysRam)), min: 1024, max: maxRamMb(sysRam), step: 512, onChange: v => setEditing(e => ({ ...e, ramMax: v })), format: v => (v / 1024).toFixed(1) + "G" })),
     React.createElement(Row, { label: "VSpeed cache", desc: "Enable the optimization engine with this profile" },
       React.createElement(Toggle, { checked: editing.vspeedEnabled, onChange: v => setEditing(e => ({ ...e, vspeedEnabled: v })) })),
     React.createElement(Row, { label: "JVM arguments", stack: true },

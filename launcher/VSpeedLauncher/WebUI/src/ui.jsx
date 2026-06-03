@@ -231,6 +231,16 @@ function Slider({ value, min, max, step = 1, onChange, format }) {
   );
 }
 
+/* ---------------- useSysRamMb: caps RAM sliders to the machine's installed memory ---------------- */
+function useSysRamMb(api) {
+  const [mb, setMb] = uS(0);
+  uE(() => {
+    if (api && api.getSystemRam) api.getSystemRam().then(r => setMb((r && r.totalMb) || 0)).catch(() => {});
+  }, [api]);
+  return mb;
+}
+function maxRamMb(sys) { return sys && sys >= 2048 ? sys : 32768; }
+
 /* ---------------- Select (custom dropdown) ----------------
    The menu is portalled to <body> at fixed coords so it can never be clipped
    by a card's overflow or trapped under a sibling's backdrop-filter stacking
@@ -446,11 +456,18 @@ function Menu({ trigger, items, align = "right" }) {
     if (!open) return;
     const close = () => setOpen(false);
     const onKey = e => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }, { once: true });
+    const onDown = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const scroller = document.getElementById("cryo-main");
+    document.addEventListener("mousedown", onDown);
     window.addEventListener("resize", close);
-    document.getElementById("cryo-main")?.addEventListener("scroll", close, { once: true });
+    scroller?.addEventListener("scroll", close, { once: true });
     document.addEventListener("keydown", onKey);
-    return () => { window.removeEventListener("resize", close); document.removeEventListener("keydown", onKey); };
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("resize", close);
+      scroller?.removeEventListener("scroll", close);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
   return React.createElement("div", { ref, style: { position: "relative", display: "inline-flex" } },
@@ -667,7 +684,7 @@ function Spotlight({ instances, onNavigate, onClose }) {
   }
 
   return React.createElement("div", {
-    onClick: e => { if (e.target === e.currentTarget) onClose(); },
+    onMouseDown: e => { if (e.target === e.currentTarget) onClose(); },
     style: { position: "fixed", inset: 0, zIndex: 800, display: "grid", placeItems: "start center", paddingTop: 130, background: "rgba(0,0,0,.55)", backdropFilter: "blur(10px)" },
   },
     React.createElement("div", {

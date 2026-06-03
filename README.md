@@ -20,6 +20,11 @@ startup-optimization engine.
 3. Windows SmartScreen may warn on first run (the app isn't code-signed yet) — click **More info → Run anyway**.
 4. The launcher **auto-updates** from GitHub: new releases download in the background and apply on restart.
 
+**Prefer to pick your own folder (no installer)?** Download **`Cryo-win-Portable.zip`** from the same
+release and extract it anywhere — it runs in place. The Setup.exe always installs per-user to
+`%LocalAppData%\Cryo` (a Velopack requirement for seamless auto-updates); for a custom location, use
+the portable build.
+
 > Public test build — expect rough edges. Please report anything you hit. 🙏
 
 ## 🐞 Found a bug?

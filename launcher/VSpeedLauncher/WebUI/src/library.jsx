@@ -28,7 +28,7 @@ function Banner({ instance, h = 96 }) {
 /* Confirm-delete overlay */
 function DeleteConfirm({ instance, onConfirm, onCancel }) {
   return React.createElement("div", {
-    onClick: e => { if (e.target === e.currentTarget) onCancel(); },
+    onMouseDown: e => { if (e.target === e.currentTarget) onCancel(); },
     style: { position: "fixed", inset: 0, zIndex: 700, display: "grid", placeItems: "center",
       background: "rgba(0,0,0,.55)", backdropFilter: "blur(8px)" },
   },
@@ -60,6 +60,7 @@ function CreateInstanceDialog({ api, hasBridge, onClose, onCreated }) {
   const [lvers, setLvers]   = lS([]);          // NeoForge versions
   const [ram, setRam]       = lS(6144);
   const [busy, setBusy]     = lS(false);
+  const sysRam              = useSysRamMb(api);
 
   // Fetch NeoForge versions when loader/mc changes
   lE(() => {
@@ -68,6 +69,8 @@ function CreateInstanceDialog({ api, hasBridge, onClose, onCreated }) {
     api.getNeoForgeVersions(mc).then(r => { if (alive && r && r.versions) { setLvers(r.versions); setLver(""); } }).catch(() => {});
     return () => { alive = false; };
   }, [loader, mc, hasBridge]);
+
+  lE(() => { const m = maxRamMb(sysRam); if (sysRam && ram > m) setRam(m); }, [sysRam]);
 
   async function create() {
     if (!name.trim()) { window.toast({ tone: "warn", icon: "info", title: "Enter a name" }); return; }
@@ -86,7 +89,7 @@ function CreateInstanceDialog({ api, hasBridge, onClose, onCreated }) {
   const inp = { height: 36, padding: "0 11px", borderRadius: "var(--r-md)", background: "var(--panel-2)", border: "1px solid var(--border)", color: "var(--text)", fontSize: 13, width: "100%", outline: "none", fontFamily: "inherit" };
 
   return React.createElement("div", {
-    onClick: e => { if (e.target === e.currentTarget) onClose(); },
+    onMouseDown: e => { if (e.target === e.currentTarget) onClose(); },
     style: { position: "fixed", inset: 0, zIndex: 700, display: "grid", placeItems: "center", background: "rgba(0,0,0,.55)", backdropFilter: "blur(8px)" },
   },
     React.createElement("div", { className: "glass-pop anim-fadein", style: { width: 460, borderRadius: "var(--r-xl)", padding: 26 }, onClick: e => e.stopPropagation() },
@@ -105,7 +108,7 @@ function CreateInstanceDialog({ api, hasBridge, onClose, onCreated }) {
       (loader === "Fabric" || loader === "Forge" || loader === "Quilt") && React.createElement("div", { style: { fontSize: 11.5, color: "var(--text-faint)", marginBottom: 14, lineHeight: 1.5 } },
         "The latest " + loader + " loader for this MC version will be installed automatically — launches without Prism."),
 
-      field("Max RAM — " + (ram / 1024).toFixed(1) + " GB", React.createElement(Slider, { value: ram, min: 1024, max: 32768, step: 512, onChange: setRam, format: v => (v / 1024).toFixed(1) + "G" })),
+      field("Max RAM — " + (ram / 1024).toFixed(1) + " GB", React.createElement(Slider, { value: Math.min(ram, maxRamMb(sysRam)), min: 1024, max: maxRamMb(sysRam), step: 512, onChange: setRam, format: v => (v / 1024).toFixed(1) + "G" })),
 
       React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 8 } },
         React.createElement(Btn, { variant: "ghost", onClick: onClose, disabled: busy }, "Cancel"),
