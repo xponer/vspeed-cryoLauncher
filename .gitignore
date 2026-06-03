@@ -1,41 +1,35 @@
-# ── Gradle ────────────────────────────────────────────────────────────────────
-.gradle/
-gradle-temp/
-gradle-8.8-all.zip
-build/
-vspeed-loader/build/
-vspeed-agent/build/
-
-# ── NeoForge dev run outputs ──────────────────────────────────────────────────
-runs/
-bin/
-
 # ── .NET launcher build outputs ───────────────────────────────────────────────
 obj/
+bin/
 launcher/publish/
 launcher/Releases/
 launcher/VSpeedLauncher/bin/
 launcher/VSpeedLauncher/obj/
 
+# ── Stale build outputs from the (removed) Gradle mod project ──────────────────
+# The vspeed-loader/agent Gradle project was removed in v1.0.6, but its generated
+# caches may still sit on disk. Keep ignoring them so they never get committed.
+.gradle/
+gradle-temp/
+gradle-8.8-all.zip
+build/
+runs/
+
 # ── Secrets: embedded into the binary at build, never committed ───────────────
 launcher/VSpeedLauncher/curseforge.key
 *.key
 
-# ── JVM crash / heap dumps ────────────────────────────────────────────────────
+# ── JVM crash / heap dumps + CDS/AOT caches (large, machine-specific) ──────────
 *.hprof
 hs_err_pid*.log
-
-# ── PrismLauncher logs ────────────────────────────────────────────────────────
-prism_error.log
-prism_launch.log
-*.log
-
-# ── CDS archive + JEP 483 AOT cache (large, machine-specific) ────────────────
 *.jsa
 *.aot
 *.aotconf
 
-# ── Python ────────────────────────────────────────────────────────────────────
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+
+# ── Python caches (legacy scripts) ────────────────────────────────────────────
 __pycache__/
 *.pyc
 

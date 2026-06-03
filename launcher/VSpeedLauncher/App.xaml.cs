@@ -71,7 +71,7 @@ public partial class App : Application
         Pipe = new PipeServer(Manager);
         Pipe.Start();
 
-        Tray = new TrayIcon(Manager, OpenMainWindow, OnExitRequested);
+        Tray = new TrayIcon(Manager, Config, OpenMainWindow, OnExitRequested);
 
         if (Config.Data.ShowOnLaunch)
             OpenMainWindow();

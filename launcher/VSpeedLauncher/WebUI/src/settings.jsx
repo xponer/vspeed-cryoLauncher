@@ -472,7 +472,7 @@ function AssistantSection({ t, api, hasBridge }) {
 
 function AboutSection({ t, api, hasBridge }) {
   const open = url => api.openUrl ? api.openUrl(url) : window.open(url, "_blank");
-  const REPO = "https://github.com/xponer/vspeed-atm10";
+  const REPO = "https://github.com/xponer/vspeed-cryoLauncher";
   const [ver, setVer] = sgS({ version: "1.0.0", installed: false });
   const [checking, setChecking] = sgS(false);
   const [upd, setUpd] = sgS(null);       // { available, version } | null

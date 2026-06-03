@@ -14,7 +14,7 @@ namespace VSpeedLauncher.Core;
 public sealed class UpdateService
 {
     // GitHub repo that hosts the releases (Setup.exe + delta packages).
-    private const string RepoUrl = "https://github.com/xponer/vspeed-atm10";
+    private const string RepoUrl = "https://github.com/xponer/vspeed-cryoLauncher";
 
     private readonly UpdateManager _mgr;
     private UpdateInfo? _pending;

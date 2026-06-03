@@ -9,14 +9,16 @@
 - A standalone **Windows Minecraft modpack launcher**. WPF host (.NET 8,
   `net8.0-windows`, self-contained `win-x64`) + **WebView2** rendering a **React**
   UI. Product name "Cryo"; the optimization engine is branded "VSpeed".
-- **No PrismLauncher dependency** for launching anymore. ⚠️ The old `README.md`
-  describes a *dead* architecture (Prism daemon + `NtSuspendProcess` hibernation
-  + a `vspeed-loader` mod + named pipe). That is historical — **ignore it**.
+- **No PrismLauncher dependency** for launching anymore. Note: some C# from the old
+  Prism-daemon design is still present but **unused for Cryo-native instances** —
+  `PipeServer`, `ProcessHibernator`, and `InstanceManager.LaunchAsync`'s Prism path.
+  The `vspeed-loader` mod + Gradle project were **removed from the repo in v1.0.6**
+  (recoverable via git history); the repo is now just `launcher/` + `docs/`.
 - Launch engine: **CmlLib.Core 4.0.6** installs versions/loaders/assets and
   builds the JVM command. Mojang JREs auto-download to
   `%LocalAppData%\VSpeedLauncher\game\runtime\windows-x64\<component>\bin\`.
 - Auto-update: **Velopack 1.1.1** + `vpk` CLI 1.1.1 → GitHub Releases
-  (repo `github.com/xponer/vspeed-atm10`).
+  (repo `github.com/xponer/vspeed-cryoLauncher`).
 - Data dir is shared with Prism: instances live under
   `%APPDATA%\PrismLauncher\instances\<id>\` (`instance.cfg`, `mmc-pack.json`,
   `minecraft/`). `mmc-pack.json` `net.minecraft` component = the MC version.
@@ -99,33 +101,49 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
-### Working tree — NOT committed yet (the user pushes manually)
-- **Mod dependency auto-resolver** — installing a Modrinth mod now also pulls its
-  required dependencies (`DownloadModrinthMod` C# / `downloadModrinthMod` bridge),
-  recursively + de-duped (depth ≤5, ≤60 deps); the toast shows "+N dependencies".
-  CurseForge mods still install as a single file.
-- **Servers: Join + live status** — the Servers tab gained a **Join** button that
-  launches the instance straight into the server: `--quickPlayMultiplayer <ip>` on
-  MC 1.20+, else `--server`/`--port` (`BuildJoinGameArgs`). Threaded through
-  `LaunchInstance`/`LaunchWithEngine` → `InstallAndLaunchAsync(extraGameArgs:)`.
-  (Live ping / MOTD / player count was already displayed.)
-- **Modpack update** — `cryo-pack.json` now records the install source (Modrinth/CF
-  project + version); `getModpackInfo` checks for a newer version; **Update**
-  re-installs the latest into the instance, MOVING old mods to `mods.bak-<ts>`
-  (reversible) and leaving `saves/` untouched. New "Modpack" card in instance Settings.
-- **og:image PNG** — `docs/og.png` (Pillow-drawn banner) replaces the SVG so link
-  previews show an image; absolute `og:image` + `twitter:image`. Removed `docs/og.svg`.
-- ⚠️ All of the above **build cleanly + pass `node --check`, but are NOT GUI-tested**
-  (computer-use was unavailable). Verify in the app before relying on them —
-  especially Modpack update (old mods are backed up, so it's recoverable).
+### v1.0.6 — released (GitHub) — tray polish + repo cleanup
+- **Tray icon fixed** — the system-tray icon now uses the app's own `cryo.ico` (loaded
+  from the embedded WPF resource, multi-resolution) instead of the generic
+  `SystemIcons.Application` fallback. `TrayIcon.LoadIcon()`.
+- **Themed tray menu** — the WinForms context menu is now dark (`CryoColors`
+  `ProfessionalColorTable` + `CryoRenderer`), with a branded header (icon + version),
+  anti-aliased status-dot icons per instance (green/amber/blue/red/gray), and drawn
+  glyphs (play / stop / folder / update / quit). Applied via `ToolStripManager.Renderer`
+  so submenus are themed too.
+- **More tray actions** — added **Open game folder**, **Check for updates** (Velopack
+  `UpdateService`; confirms, downloads, restarts), per-instance **Open folder**, and
+  **Stop all (N)** (shown only when something is running). Dropped the dead
+  **Hibernate/Wake** items (that architecture is retired). `TrayIcon` now takes a
+  `ConfigStore` (for `PrismDataDir`).
+- **Auto-update URL fix (important)** — `UpdateService.RepoUrl` still pointed at the old
+  repo name `vspeed-atm10`; corrected to `vspeed-cryoLauncher`. Auto-update was only
+  working through GitHub's rename redirect — now it's canonical. Also fixed stale
+  `vspeed-atm10` references in `settings.jsx` (About links), `build-release.ps1`, docs.
+- **Repo cleanup (max hygiene)** — removed the retired VSpeed *mod* project:
+  `vspeed-loader/`, `vspeed-agent/`, `vspeed_agent.jar`, the Gradle wrapper +
+  `build.gradle`/`settings.gradle`/`gradle.properties`, and `scripts/vspeed_test.py`
+  (recoverable via git history). The repo is now just `launcher/` + `docs/`.
+- **Root `README.md` rewritten** — it described the dead Prism/mod architecture and
+  pointed at the old repo; it now accurately describes the standalone launcher.
+  `.gitignore` trimmed accordingly.
+- ⚠️ The tray changes **build cleanly** but were **not GUI-tested** this session — eyeball
+  the icon + menu before relying on them (the logic is straightforward).
 
-### Unreleased (committed to `main`, not yet in a release → next is v1.0.5)
-- **App icon** — added `VSpeedLauncher/cryo.ico` (snowflake, blue→purple) as the
-  exe `<ApplicationIcon>` and the WPF `Window.Icon`; `build-release.ps1` already
-  passes it to Velopack for the installer/shortcut. Generated with Pillow.
-- **Landing page** — `docs/` static site hosted on GitHub Pages
-  (https://xponer.github.io/vspeed-cryoLauncher/). Repo was renamed
-  `vspeed-atm10` → `vspeed-cryoLauncher`; site links point to the new name.
+### v1.0.5 — released (GitHub) — features
+- **Mod dependency auto-resolver** — installing a Modrinth mod also pulls its required
+  dependencies (`DownloadModrinthMod` / `downloadModrinthMod`), recursively + de-duped
+  (depth ≤5, ≤60 deps); the toast shows "+N dependencies". CurseForge mods install as one file.
+- **Servers: Join + live status** — the Servers tab gained a **Join** button that launches
+  straight into a server: `--quickPlayMultiplayer <ip>` on MC 1.20+, else `--server`/`--port`
+  (`BuildJoinGameArgs`), threaded through `LaunchInstance`/`LaunchWithEngine` →
+  `InstallAndLaunchAsync(extraGameArgs:)`. (Live ping / MOTD / player count already shown.)
+- **Modpack update** — `cryo-pack.json` records the install source; `getModpackInfo` checks
+  for a newer version; **Update** re-installs the latest, MOVING old mods to `mods.bak-<ts>`
+  (reversible) and leaving `saves/` untouched. New "Modpack" card in instance Settings.
+- **App icon** — `VSpeedLauncher/cryo.ico` (snowflake) as the exe `<ApplicationIcon>`, WPF
+  `Window.Icon`, and the Velopack installer/shortcut icon.
+- **Landing page** — `docs/` static site on GitHub Pages
+  (https://xponer.github.io/vspeed-cryoLauncher/); `og:image` PNG for link previews.
 
 ### v1.0.4 — CurseForge "works-for-everyone" groundwork + One-click Optimize
 - **One-click Optimize** (instance Settings → Memory allocation) — a button that
