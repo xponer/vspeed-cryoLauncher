@@ -1,5 +1,7 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Interop;
 using Microsoft.Web.WebView2.Core;
 using VSpeedLauncher.Core;
 
@@ -15,6 +17,11 @@ public partial class MainWindow : Window
         // Taskbar / Alt-Tab icon (the window has custom chrome, so set it explicitly).
         try { Icon = System.Windows.Media.Imaging.BitmapFrame.Create(new Uri("pack://application:,,,/cryo.ico", UriKind.Absolute)); }
         catch { /* icon is optional — never block startup on it */ }
+        // Clamp the maximized size to the monitor work area. Without this, a
+        // WindowStyle=None window maximizes over the whole monitor and its bottom
+        // edge slides under the taskbar (the "bar covering the launcher" bug).
+        SourceInitialized += (_, _) =>
+            HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(WndProc);
         Loaded += async (_, _) => await InitWebViewAsync();
     }
 
@@ -90,5 +97,64 @@ public partial class MainWindow : Window
     {
         e.Cancel = true;
         Hide();
+    }
+
+    // ── Maximize fix ─────────────────────────────────────────────────────────────
+    // A WindowStyle=None window maximizes to the full monitor (under the taskbar) by
+    // default. Handle WM_GETMINMAXINFO to clamp the maximized rect to the work area.
+    private const int WM_GETMINMAXINFO       = 0x0024;
+    private const int MONITOR_DEFAULTTONEAREST = 0x00000002;
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg != WM_GETMINMAXINFO) return IntPtr.Zero;
+        try
+        {
+            var monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if (monitor == IntPtr.Zero) return IntPtr.Zero;
+
+            var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+            if (!GetMonitorInfo(monitor, ref mi)) return IntPtr.Zero;
+
+            var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+            // Position/size are relative to the monitor (handles taskbar on any edge
+            // and secondary monitors).
+            mmi.ptMaxPosition.x = mi.rcWork.left   - mi.rcMonitor.left;
+            mmi.ptMaxPosition.y = mi.rcWork.top    - mi.rcMonitor.top;
+            mmi.ptMaxSize.x     = mi.rcWork.right  - mi.rcWork.left;
+            mmi.ptMaxSize.y     = mi.rcWork.bottom - mi.rcWork.top;
+            Marshal.StructureToPtr(mmi, lParam, true);
+            handled = true;
+        }
+        catch { /* fall back to default maximize behavior */ }
+        return IntPtr.Zero;
+    }
+
+    [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, int flags);
+    [DllImport("user32.dll")] private static extern bool   GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int x; public int y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MINMAXINFO
+    {
+        public POINT ptReserved;
+        public POINT ptMaxSize;
+        public POINT ptMaxPosition;
+        public POINT ptMinTrackSize;
+        public POINT ptMaxTrackSize;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT { public int left, top, right, bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int  cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public int  dwFlags;
     }
 }

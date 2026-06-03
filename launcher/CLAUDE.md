@@ -101,6 +101,13 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### v1.0.8 — released (GitHub) — maximized-window fix
+- **Maximize no longer slides under the taskbar** — a `WindowStyle=None` window maximizes
+  over the *whole monitor* by default, so the launcher's bottom edge (status bar / content)
+  was covered by the Windows taskbar. `MainWindow` now hooks `WM_GETMINMAXINFO` and clamps
+  the maximized rect to the monitor **work area** (handles a taskbar on any edge and
+  secondary monitors). `MainWindow.xaml.cs`.
+
 ### v1.0.7 — released (GitHub) — UX fixes from tester feedback
 - **Dialogs no longer close on drag-release** — modal backdrops (New instance, Delete,
   command palette) closed on `onClick` (= mouse-up), so pressing inside and releasing over
