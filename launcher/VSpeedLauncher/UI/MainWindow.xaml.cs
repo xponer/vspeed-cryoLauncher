@@ -93,6 +93,28 @@ public partial class MainWindow : Window
             WebView);
 
         WebView.CoreWebView2.WebMessageReceived += _bridge.OnWebMessageReceived;
+
+        // Surface page-side problems (CSP violations, MIME/script-load refusals, network
+        // errors, uncaught JS exceptions) into launcher.log — invaluable when the WebUI
+        // silently fails to render. Enabled before Navigate so load-time errors are caught.
+        try
+        {
+            WebView.CoreWebView2.GetDevToolsProtocolEventReceiver("Log.entryAdded")
+                .DevToolsProtocolEventReceived += (_, e) =>
+                {
+                    // Only surface errors (CSP/MIME refusals, failed loads). Skipping
+                    // warning-level entries keeps benign noise (e.g. tracking-prevention
+                    // storage notices for the CDN font CSS) out of the log.
+                    var j = e.ParameterObjectAsJson;
+                    if (j.Contains("\"level\":\"error\"")) Logger.Warn("WebLog: " + j);
+                };
+            WebView.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.exceptionThrown")
+                .DevToolsProtocolEventReceived += (_, e) => Logger.Error("WebError: " + e.ParameterObjectAsJson);
+            await WebView.CoreWebView2.CallDevToolsProtocolMethodAsync("Log.enable", "{}");
+            await WebView.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.enable", "{}");
+        }
+        catch (Exception ex) { Logger.Warn($"DevTools diagnostics unavailable: {ex.Message}"); }
+
         // Drop the dark init-cover once the page (and its in-page splash) has painted,
         // so the user never sees the WebView's flickery first frames.
         WebView.CoreWebView2.NavigationCompleted += (_, _) =>

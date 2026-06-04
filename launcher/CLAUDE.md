@@ -47,21 +47,31 @@
   `Releases/`). Bump `<Version>` in `VSpeedLauncher/VSpeedLauncher.csproj` first.
   Publishing to GitHub is a separate step — **only when the user authorizes it.**
 
-## UI conventions (`WebUI/src/*.jsx`)
+## UI conventions (`WebUI/src/*.js`)
 
-- React 18 via **Babel standalone**, **NO JSX** — everything is
-  `React.createElement(...)`.
-- Scripts are plain (non-module): a top-level `function Foo(){}` in any `.jsx` is
+- React 18 (**production, vendored** at `WebUI/vendor/react*.production.min.js`),
+  **NO JSX** — everything is `React.createElement(...)`. There is **no Babel** any
+  more: the files are plain JS loaded as `<script defer src="src/*.js">` (unreleased).
+- Scripts are plain (non-module): a top-level `function Foo(){}` in any `.js` is
   a **global** usable from other files. Load order is in `Cryo Launcher.html`;
-  `ui.jsx` (shared: `Btn`, `Icon`, `Select`, `TextInput`, `Slider`, `SkinHead`…)
+  `ui.js` (shared: `Btn`, `Icon`, `Select`, `TextInput`, `Slider`, `SkinHead`…)
   loads before the feature files.
-- **Never define a component inside another component's render.** Babel/React
-  sees a new type each render and **remounts** the subtree — this caused the
-  "Java-path input loses focus on every keystroke" bug (`Section` was nested
-  inside `SettingsTab`). Define components at module scope.
-- Bridge: `store.jsx` `api.<method>()` → `CryoBridge.DispatchAsync` switch. To add
+- **Cross-file shared bindings must NOT collide.** Because every file shares one
+  global lexical scope, a top-level `const`/`let` with the same name in two files
+  throws `Identifier 'X' has already been declared` (Babel used to hide this by
+  downleveling `const`→`var`). So: **alias per-file** (`const { useApp: useAppMR } =
+  window.CryoStore`) **or** use `var` for a genuinely shared binding (e.g.
+  `var { useApp } = window.CryoStore`). `function` redeclaration is fine.
+- **Never define a component inside another component's render.** React sees a new
+  type each render and **remounts** the subtree — this caused the "Java-path input
+  loses focus on every keystroke" bug (`Section` was nested inside `SettingsTab`).
+  Define components at module scope.
+- Bridge: `store.js` `api.<method>()` → `CryoBridge.DispatchAsync` switch. To add
   a call, add it in **both** places. C#→JS events: `Push(event, payload)` in
   CryoBridge → `window` event listeners in the UI.
+- **Page-side errors go to `launcher.log`**: `MainWindow` enables CDP `Log`/`Runtime`
+  and logs error-level `WebLog:` (CSP/MIME/network) + `WebError:` (uncaught JS). If the
+  UI silently fails to render, check the log first.
 
 ## Engine launch & Java (the part that breaks most often)
 
@@ -100,6 +110,66 @@
 > Newest at the top. Mark whether something is **released** (in a GitHub
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
+
+### Unreleased (working tree) — quality pass (UI polish · clean code · security · perf)
+> A staged, four-part quality pass: **UI polish → clean code → security hardening →
+> performance**. All four steps are done in the working tree (not committed/released yet).
+- **Step 4 — Performance / lightweight (drop runtime Babel).** The biggest startup cost was
+  **Babel-standalone**: it downloaded ~3 MB from a CDN and recompiled all 15 UI files on the
+  main thread at every launch (the startup lag/jank). But the files contain **no JSX** (all
+  `React.createElement`), so Babel was pure overhead. Removed it entirely:
+  - **No Babel; files load as plain `<script defer src="src/*.js">`** (renamed `.jsx` → `.js`,
+    since they were never JSX). `defer` = parallel download, order preserved.
+  - **React 18.3.1 production, vendored locally** (`WebUI/vendor/react*.production.min.js`,
+    ~139 KB total) — replaces the dev builds loaded from unpkg. No CDN for scripts → faster
+    cold start, works offline, and enables a strict `script-src 'self'`.
+  - **CSP tightened to `script-src 'self'`** (dropped `'unsafe-inline'`, `'unsafe-eval'`, and
+    `https://unpkg.com` — all only needed for runtime Babel). This completes the step-3 CSP.
+  - **Fix (Babel-masked bug):** as native classic scripts, a duplicate top-level `const` across
+    files throws `Identifier 'useApp' has already been declared` (Babel hid this via `const`→`var`).
+    `useApp` was declared un-aliased in 6 files → changed those to `var { useApp } = window.CryoStore`
+    (assistant/modrinth already aliased it). See the new "cross-file shared bindings" UI convention.
+  - **Page-error diagnostics → `launcher.log`** (`MainWindow`, CDP `Log`/`Runtime`): error-level
+    `WebLog:` (CSP/MIME/network refusals) + `WebError:` (uncaught JS). This is how the `useApp`
+    crash was pinpointed; kept (filtered to errors) as a permanent support aid.
+  - **Inline SVG favicon** (brand snowflake, data: URI) — removes the `/favicon.ico` 404.
+  - Verified live: bridge fires (23 calls), `WebError: 0`, CSP refusals `0`, log clean.
+  - ⚠️ Remaining CDN dep: the **Geist fonts** still load from jsdelivr (style/font-src). They work
+    (fallback to system fonts offline) but trigger WebView2 tracking-prevention notices; vendoring
+    them would allow dropping jsdelivr from the CSP too — left as optional follow-up.
+- **Step 3 — Security hardening (data/personal).** Verified token/key handling is sound
+  (MS/Minecraft tokens stay DPAPI-encrypted `accounts.bin`; AI/CurseForge keys + Discord ID
+  never leave C# — `getConfig` returns only `aiHasKey`/`curseHasKey`/`discordHasId` booleans;
+  AI calls run in C#, the key never reaches JS). New hardening:
+  - **Log PII scrubbing** — `Logger` now collapses the user-profile path to `~` on every line
+    (both slash styles), so a shared log can't leak the Windows account name / home layout.
+  - **Bridge path-traversal guards** (treat renderer messages as untrusted, defence-in-depth):
+    `IsSafeSegment` (no separators/`..`/illegal chars) + `IsContained` (resolved path stays in
+    its base). Applied to `SetModEnabled` (the real hole — `file` was combined unchecked),
+    `DeleteScreenshot`/`OpenScreenshot`, `OpenFolder`, `MoveInstance` (id), and `setModEnabled`.
+  - **`OpenPath` lock-down** — rejects UNC paths (`\\host` → NTLM-leak vector) and only opens
+    folders inside a launcher-managed base (`IsAllowedOpenBase`: configured instance roots +
+    Cryo's app-data dir). The Settings "Open" button still works (it passes a configured root).
+  - **Content-Security-Policy** — added a strict CSP `<meta>` to `Cryo Launcher.html`:
+    `default-src 'none'`; scripts limited to self + unpkg (React/Babel); styles/fonts to self +
+    jsdelivr; `img-src 'self' data: https:`; `connect-src 'self'`; iframes/objects/workers/forms/
+    `<base>` all denied. `script-src` still needs `'unsafe-inline'`/`'unsafe-eval'` ONLY because
+    JSX is compiled in-browser by Babel — **step 4 removes both** once JSX is precompiled (`'self'`).
+  - Verified live via the launcher log: bridge calls fire (CSP didn't break Babel/React render)
+    and the "Serving UI from source" path now prints `~\…` (redaction working).
+- **Step 2 — Clean code.** Removed the dead **hibernate/wake** user feature (it depended on
+  `InstanceState.Ready`, only ever set by the retired vspeed-loader pipe, so it was inert):
+  dropped the `hibernateInstance`/`wakeInstance` bridge arms + methods, the two `store.jsx`
+  wrappers, and the `hibernateBtn`/`wakeBtn` in `instance.jsx` (running state is now just a
+  "running" badge). `InstanceManager`/`ProcessHibernator` are kept intact — `Terminate` still
+  backs Stop/Kill, and the Prism `LaunchAsync` path still serves non-cryo instances.
+- **Step 1 — UI polish.** `styles.css`: `accent-color`, removed tap-highlight, `scrollbar-gutter:
+  stable` (no layout shift), `text-wrap: balance/pretty` for headings/paragraphs. `ScreenshotsTab`
+  loading state now uses the shared `Spinner`.
+  - A `prefers-reduced-motion` block was added then **removed**: it froze the loading spinners
+    when the OS "show animations" toggle is off, and it duplicated the launcher's own animation
+    toggle (`data-anim="off"`). Motion is now governed solely by that in-app setting, which never
+    stops the functional spinners.
 
 ### v1.0.9 — released (GitHub) — startup splash, health check, screenshots, auto-backup
 - **Startup splash (no white/black flash)** — an in-page HTML/CSS splash (snowflake + a

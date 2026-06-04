@@ -28,6 +28,14 @@ public static class Logger
     private static readonly object _lock = new();
     private static StreamWriter? _writer;
 
+    // PII scrubbing. The user-profile path embeds the Windows account name and shows up
+    // in almost every file path we log (instances, runtimes, screenshots, caches…).
+    // Collapse it to "~" so a log can be shared for support without leaking the account
+    // name or home-directory layout. Computed once; cheap string.Replace per line.
+    private static readonly string _home =
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile).TrimEnd('\\', '/');
+    private static readonly string _homeFwd = _home.Replace('\\', '/');
+
     public static void Init(string path)
     {
         // Rotate if larger than 5 MB — keep one .old file as backup.
@@ -59,9 +67,19 @@ public static class Logger
     {
         lock (_lock)
         {
-            var line = $"{DateTime.Now:HH:mm:ss.fff} {level} {msg}";
+            var line = $"{DateTime.Now:HH:mm:ss.fff} {level} {Redact(msg)}";
             _writer?.WriteLine(line);
             System.Diagnostics.Debug.WriteLine(line);
         }
+    }
+
+    /// <summary>Replaces the user-profile path with "~" (both slash styles).</summary>
+    private static string Redact(string msg)
+    {
+        if (string.IsNullOrEmpty(msg)) return msg;
+        if (_home.Length    > 0) msg = msg.Replace(_home,    "~", StringComparison.OrdinalIgnoreCase);
+        if (_homeFwd.Length > 0 && _homeFwd != _home)
+                                 msg = msg.Replace(_homeFwd, "~", StringComparison.OrdinalIgnoreCase);
+        return msg;
     }
 }

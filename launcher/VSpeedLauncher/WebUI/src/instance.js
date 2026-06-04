@@ -1,9 +1,9 @@
-﻿/* ============================================================
+/* ============================================================
    Cryo вЂ” Instance Detail container (header + launch + tabs)
    Supports both mock simulation (browser) and real bridge (WebView2).
    ============================================================ */
 const { useState: dS, useEffect: dE, useRef: dR, useCallback: dC } = React;
-const { useApp: useApp } = window.CryoStore;
+var { useApp } = window.CryoStore;
 
 function InstanceDetail({ id, initialTab, autoLaunch }) {
   const { api, hasBridge, t, fmt, navigate } = useApp();
@@ -198,14 +198,6 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
     { value: "settings",     label: t("tab.settings"),     icon: "sliders" },
   ];
 
-  // Extra actions when bridge is active
-  const hibernateBtn = hasBridge && status === "running" && instance.state === "ready"
-    ? React.createElement(Btn, { variant: "subtle", icon: "pause", size: "lg", onClick: () => api.hibernateInstance(instance.id) }, "Hibernate")
-    : null;
-  const wakeBtn = hasBridge && status === "running" && instance.state === "hibernated"
-    ? React.createElement(Btn, { variant: "accentSoft", icon: "play", size: "lg", onClick: () => api.wakeInstance(instance.id) }, "Wake")
-    : null;
-
   const playBtn = status === "idle"
     ? React.createElement(Btn, { variant: "primary", size: "lg", icon: "play", onClick: startLaunch }, t("common.play"))
     : status === "launching"
@@ -215,9 +207,7 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
               t("common.launching") + (modelT > 0 ? " " + modelT.toFixed(0) + "s" : ""))),
           React.createElement(Btn, { variant: "outline", size: "lg", icon: "square", onClick: stop }))
       : React.createElement("div", { style: { display: "flex", gap: 8 } },
-          hibernateBtn || wakeBtn ||
-            React.createElement(Badge, { tone: "success", dot: true, style: { height: 46, padding: "0 18px", fontSize: 13.5 } },
-              instance.state === "hibernated" ? "Hibernated" : t("common.running")),
+          React.createElement(Badge, { tone: "success", dot: true, style: { height: 46, padding: "0 18px", fontSize: 13.5 } }, t("common.running")),
           React.createElement(Btn, { variant: "outline", size: "lg", icon: "power", onClick: stop }, t("common.stop")));
 
   return React.createElement("div", { style: { padding: "20px 30px 40px", maxWidth: 1320, margin: "0 auto" } },

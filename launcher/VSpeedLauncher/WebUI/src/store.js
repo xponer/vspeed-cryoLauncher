@@ -281,8 +281,6 @@ function createBridgeApi() {
     async accountLogout()              { return call("accountLogout"); },
     async getStats(id)                 { return call("getStats", { id }); },
     async stopInstance(id)             { return call("stopInstance", { id }); },
-    async hibernateInstance(id)      { return call("hibernateInstance", { id }); },
-    async wakeInstance(id)           { return call("wakeInstance", { id }); },
     async getConfig()                { return call("getConfig"); },
     async saveConfig(data)           { return call("saveConfig", data); },
     // ── Instance config ───────────────────────────────────────────────────────

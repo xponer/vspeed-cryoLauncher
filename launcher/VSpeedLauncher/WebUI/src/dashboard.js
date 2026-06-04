@@ -3,7 +3,7 @@
    (instances + cache sizes + launch history + benchmark results)
    ============================================================ */
 const { useState: hS, useEffect: hE, useMemo: hM } = React;
-const { useApp: useApp } = window.CryoStore;
+var { useApp } = window.CryoStore;
 
 function DashCard({ icon, label, children, style = {} }) {
   return React.createElement(Card, { style: { borderRadius: "var(--r-xl)", ...style } },

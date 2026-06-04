@@ -186,6 +186,20 @@ body {
   border-radius: 4px;
 }
 
+/* ---------- polish ---------- */
+:root { accent-color: var(--acc); }
+html { -webkit-tap-highlight-color: transparent; }
+/* Reserve the scrollbar's width so content doesn't shift when navigating
+   between screens that scroll and ones that don't. */
+#cryo-main { scrollbar-gutter: stable; }
+/* Prettier line breaks (progressive enhancement; ignored where unsupported). */
+h1, h2, h3, h4 { text-wrap: balance; }
+p, .md-body p.md-p { text-wrap: pretty; }
+
+/* Note: motion is governed solely by the launcher's own Settings toggle
+   (`data-anim="off"` → see below), NOT the OS `prefers-reduced-motion` setting —
+   one explicit control, and it never freezes the loading spinners. */
+
 /* ---------- motion ---------- */
 @keyframes fadeUp { from { opacity: 0; transform: translateY(8px);} to {opacity:1; transform:none;} }
 @keyframes fadeIn { from { opacity: 0; } to {opacity:1;} }

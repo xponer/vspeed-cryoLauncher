@@ -1,8 +1,8 @@
-﻿/* ============================================================
+/* ============================================================
    Cryo вЂ” Library screen
    ============================================================ */
 const { useState: lS, useEffect: lE, useMemo: lM, useCallback: lCb } = React;
-const { useApp: useApp } = window.CryoStore;
+var { useApp } = window.CryoStore;
 
 function cacheBadge(state, t) {
   if (state === "ready")      return React.createElement(Badge, { tone: "accent", icon: "zap",     size: "sm" }, t("cache.ready"));

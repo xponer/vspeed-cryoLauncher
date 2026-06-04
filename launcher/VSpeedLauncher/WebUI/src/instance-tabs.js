@@ -1522,7 +1522,7 @@ function ScreenshotsTab({ instance, api, hasBridge }) {
     api.deleteScreenshot(instance.id, s.file).then(() => { setShots(list => (list || []).filter(x => x.file !== s.file)); window.toast({ tone: "neutral", icon: "trash", title: "Deleted" }); }).catch(() => {});
   }
 
-  if (shots === null) return React.createElement("div", { style: { padding: 30, color: "var(--text-dim)", fontSize: 13 } }, "Loading…");
+  if (shots === null) return React.createElement("div", { style: { padding: 48, display: "grid", placeItems: "center" } }, React.createElement(Spinner, { size: 22 }));
   if (!shots.length) return React.createElement(EmptyState, { icon: "image", title: "No screenshots yet", body: "Screenshots you take in-game (F2) will show up here." });
   return React.createElement("div", null,
     React.createElement("div", { style: { fontSize: 12.5, color: "var(--text-dim)", marginBottom: 12 } }, shots.length + " screenshot" + (shots.length === 1 ? "" : "s") + " · click to open"),

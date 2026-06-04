@@ -1,9 +1,9 @@
-﻿/* ============================================================
+/* ============================================================
    Cryo вЂ” Logs screen: virtualized tail, filters, regex search,
    VSpeed highlighting, crash banner, stacktrace expand.
    ============================================================ */
 const { useState: gS, useEffect: gE, useMemo: gM, useRef: gR, useCallback: gCb } = React;
-const { useApp: useApp } = window.CryoStore;
+var { useApp } = window.CryoStore;
 
 const LEVEL_META = {
   DEBUG: { color: "var(--text-faint)", bg: "transparent" },

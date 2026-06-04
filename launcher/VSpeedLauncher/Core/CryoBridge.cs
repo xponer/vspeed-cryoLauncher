@@ -294,8 +294,6 @@ public sealed class CryoBridge
             "aiChatStream"    => StartAiStream(args),
             "getStats"        => GetStats(args.Str("id")),
             "stopInstance"    => StopInstance(args.Str("id")),
-            "hibernateInstance" => HibernateInstance(args.Str("id")),
-            "wakeInstance"    => WakeInstance(args.Str("id")),
             "windowMinimize"  => WindowMinimize(),
             "windowMaximize"  => WindowMaximize(),
             "windowClose"     => WindowClose(),
@@ -665,8 +663,12 @@ public sealed class CryoBridge
     /// <summary>Enable/disable a mod by renaming its jar ↔ jar.disabled.</summary>
     private object SetModEnabled(string id, string file, bool enabled)
     {
+        if (!IsSafeSegment(id) || !IsSafeSegment(file))
+            return new { ok = false, error = "Invalid mod or instance name." };
         var modsDir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "mods");
         var current = Path.Combine(modsDir, file);
+        if (!IsContained(modsDir, current))
+            return new { ok = false, error = "Invalid mod path." };
         if (!File.Exists(current))
             return new { ok = false, error = "Mod file not found: " + file };
 
@@ -854,6 +856,54 @@ public sealed class CryoBridge
         return _prismDataDir ?? "";
     }
 
+    // ── Security: bridge-input guards ────────────────────────────────────────────
+    // The WebView renderer is trusted today, but treating its messages as untrusted
+    // input is cheap defence-in-depth: even a single XSS must not be able to rename,
+    // delete, open, or move files outside the locations the launcher manages.
+
+    /// <summary>True when <paramref name="name"/> is a single safe path segment —
+    /// no directory separators, no "..", no characters illegal in a file name.
+    /// Real instance ids and mod file names always satisfy this.</summary>
+    private static bool IsSafeSegment(string? name)
+        => !string.IsNullOrWhiteSpace(name)
+           && name!.IndexOfAny(Path.GetInvalidFileNameChars()) < 0
+           && name != "." && name != ".."
+           && !name.Contains("..", StringComparison.Ordinal);
+
+    /// <summary>True when <paramref name="candidate"/> resolves to a path inside
+    /// <paramref name="baseDir"/> (blocks path-traversal escapes).</summary>
+    private static bool IsContained(string baseDir, string candidate)
+    {
+        try
+        {
+            var root = Path.GetFullPath(baseDir).TrimEnd('\\', '/') + Path.DirectorySeparatorChar;
+            return Path.GetFullPath(candidate).StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
+    /// <summary>True when <paramref name="path"/> equals or sits under a launcher-managed
+    /// base (a configured instance root or Cryo's own app-data dir). Gates <see cref="OpenPath"/>
+    /// so a compromised renderer can't open arbitrary folders (or UNC shares) via Explorer.</summary>
+    private bool IsAllowedOpenBase(string path)
+    {
+        string full;
+        try { full = Path.GetFullPath(path).TrimEnd('\\', '/'); } catch { return false; }
+
+        var bases = new List<string>(_config.Data.InstanceRoots.Where(r => !string.IsNullOrWhiteSpace(r))!);
+        if (!string.IsNullOrWhiteSpace(_prismDataDir)) bases.Add(_prismDataDir);
+        bases.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "VSpeedLauncher"));
+
+        foreach (var b in bases)
+        {
+            string bf;
+            try { bf = Path.GetFullPath(b).TrimEnd('\\', '/'); } catch { continue; }
+            if (full.Equals(bf, StringComparison.OrdinalIgnoreCase)) return true;                                   // the root itself
+            if (full.StartsWith(bf + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return true; // inside it
+        }
+        return false;
+    }
+
     /// <summary>Validates a requested target root against the configured locations;
     /// falls back to the primary root when empty/unknown.</summary>
     private string ResolveTargetRoot(string requested)
@@ -968,8 +1018,14 @@ public sealed class CryoBridge
     {
         try
         {
-            if (!Directory.Exists(path)) return new { ok = false, error = "Folder not found." };
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = path, UseShellExecute = true });
+            var p = (path ?? "").Trim();
+            if (p.Length == 0) return new { ok = false, error = "No path." };
+            // Reject UNC paths (\\host\share, //host) — opening one can leak the user's
+            // NTLM credentials to a remote SMB host chosen by an attacker.
+            if (p.StartsWith(@"\\") || p.StartsWith("//")) return new { ok = false, error = "Network paths are not allowed." };
+            if (!Directory.Exists(p)) return new { ok = false, error = "Folder not found." };
+            if (!IsAllowedOpenBase(p)) return new { ok = false, error = "That folder is outside Cryo's managed locations." };
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = p, UseShellExecute = true });
             return new { ok = true };
         }
         catch (Exception e) { return new { ok = false, error = e.Message }; }
@@ -979,6 +1035,7 @@ public sealed class CryoBridge
     /// rename; cross-volume falls back to copy+delete. Push: moveProgress / moveDone.</summary>
     private object MoveInstance(string id, string targetRoot)
     {
+        if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
         var target = ResolveTargetRoot(targetRoot);
         _ = Task.Run(() =>
         {
@@ -2697,7 +2754,10 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     {
         try
         {
-            var path = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "screenshots", Path.GetFileName(file));
+            if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
+            var dir  = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "screenshots");
+            var path = Path.Combine(dir, Path.GetFileName(file ?? ""));
+            if (!IsContained(dir, path)) return new { ok = false, error = "Invalid path." };
             if (File.Exists(path)) File.Delete(path);
             return new { ok = true };
         }
@@ -2708,7 +2768,10 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     {
         try
         {
-            var path = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "screenshots", Path.GetFileName(file));
+            if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
+            var dir  = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "screenshots");
+            var path = Path.Combine(dir, Path.GetFileName(file ?? ""));
+            if (!IsContained(dir, path)) return new { ok = false, error = "Invalid path." };
             if (File.Exists(path)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = path, UseShellExecute = true });
             return new { ok = true };
         }
@@ -4009,20 +4072,6 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         return new { ok = true };
     }
 
-    private object HibernateInstance(string id)
-    {
-        var inst = _manager.FindById(id);
-        if (inst != null) _manager.Hibernate(inst);
-        return new { ok = true };
-    }
-
-    private object WakeInstance(string id)
-    {
-        var inst = _manager.FindById(id);
-        if (inst != null) _ = _manager.WakeAsync(inst);
-        return new { ok = true };
-    }
-
     // ── Window controls ───────────────────────────────────────────────────────
 
     private object WindowMinimize()
@@ -4200,6 +4249,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private object OpenFolder(string id)
     {
+        if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
         var mc = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft");
         var dir = Directory.Exists(mc) ? mc : Path.Combine(InstanceDataDir(id), "instances", id);
         if (Directory.Exists(dir))

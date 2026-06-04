@@ -2,7 +2,7 @@
    Cryo - app shell: titlebar, sidebar, background, router
    ============================================================ */
 const { useState: aS, useEffect: aE, useRef: aR } = React;
-const { useApp, useT } = window.CryoStore;
+var { useApp, useT } = window.CryoStore;
 
 /* ---- drifting frost particles ---- */
 function ParticleField({ active }) {

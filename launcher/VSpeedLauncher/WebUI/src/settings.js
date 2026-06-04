@@ -3,7 +3,7 @@
    notifications, about. Heavy on customization.
    ============================================================ */
 const { useState: sgS, useMemo: sgM, useEffect: sgE } = React;
-const { useApp: useApp } = window.CryoStore;
+var { useApp } = window.CryoStore;
 
 const PRESET_SWATCHES = {
   glacier: ["#67E8F9", "#38BDF8", "#6366F1"],
