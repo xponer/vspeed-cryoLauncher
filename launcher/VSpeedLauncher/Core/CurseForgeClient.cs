@@ -39,13 +39,14 @@ public sealed class CurseForgeClient
 
     public const int ClassModpacks = 4471;
 
-    public async Task<JsonNode?> SearchAsync(string apiKey, string query, string mcVersion, string loader, int offset, int limit, int classId = ClassMods)
+    public async Task<JsonNode?> SearchAsync(string apiKey, string query, string mcVersion, string loader, int offset, int limit, int classId = ClassMods, int sortField = 2)
     {
+        // sortField: 2 Popularity · 3 LastUpdated · 6 TotalDownloads (CurseForge enum).
         var qp = new List<string>
         {
             $"gameId={GameId}", $"classId={classId}",
             $"searchFilter={Uri.EscapeDataString(query ?? "")}",
-            "sortField=2", "sortOrder=desc",   // 2 = Popularity
+            $"sortField={sortField}", "sortOrder=desc",
             $"index={offset}", $"pageSize={limit}",
         };
         if (!string.IsNullOrEmpty(mcVersion)) qp.Add($"gameVersion={Uri.EscapeDataString(mcVersion)}");

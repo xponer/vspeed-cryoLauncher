@@ -126,7 +126,14 @@
 html, body { height: 100%; margin: 0; }
 body {
   font-family: var(--font-ui);
-  background: var(--bg-0);
+  /* Ambient aurora — two soft accent glows in the top corners over the base colour.
+     The frosted-glass panels sit on top, so it reads as subtle depth, and it retints
+     itself whenever the accent theme changes. */
+  background:
+    radial-gradient(46% 56% at 14% -4%, color-mix(in oklab, var(--acc) 20%, transparent), transparent 70%),
+    radial-gradient(42% 52% at 90% 2%, color-mix(in oklab, var(--acc) 13%, transparent), transparent 72%),
+    var(--bg-0);
+  background-attachment: fixed;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -177,7 +184,7 @@ body {
   border: 3px solid transparent;
   background-clip: padding-box;
 }
-*::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: var(--acc); background-clip: padding-box; }
 
 /* focus ring */
 :focus-visible {
@@ -220,6 +227,20 @@ p, .md-body p.md-p { text-wrap: pretty; }
 [data-anim="off"] .anim-fadeup,
 [data-anim="off"] .anim-fadein { animation: none !important; }
 [data-anim="off"] * { transition: none !important; }
+
+/* Ambient snowfall (Cryo) — decorative, behind content, respects the anim toggle. */
+.cryo-snow { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 1; }
+.cryo-snow span {
+  position: absolute; top: -2vh; border-radius: 50%; background: #fff;
+  opacity: 0; will-change: transform; animation: cryo-fall linear infinite;
+}
+@keyframes cryo-fall {
+  0%   { transform: translate3d(0, -2vh, 0);                 opacity: 0; }
+  12%  { opacity: .5; }
+  88%  { opacity: .42; }
+  100% { transform: translate3d(var(--dx, 14px), 102vh, 0);  opacity: 0; }
+}
+[data-anim="off"] .cryo-snow { display: none; }
 
 .skeleton {
   background: linear-gradient(90deg, var(--panel) 0%, var(--panel-hi) 50%, var(--panel) 100%);

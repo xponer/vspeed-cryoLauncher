@@ -618,11 +618,39 @@ function DepGraph({ nodes, edges }) {
 }
 
 /* ============ MODS ============ */
-function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge }) {
+function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge, onModsChanged }) {
   const [mods, setMods] = tS(mods0);
   const [q, setQ] = tS("");
   const [filter, setFilter] = tS("all");
+  const [dragOver, setDragOver] = tS(false);
+  const dragCnt = tRf(0);
   tE(() => setMods(mods0), [mods0]);
+
+  function reloadMods() {
+    if (hasBridge) api.getMods(instance.id).then(m => setMods(m || [])).catch(() => {});
+  }
+  async function pickLocalMods() {
+    if (!hasBridge || !api.addLocalMods) { window.toast({ tone: "warn", icon: "info", title: "Desktop only" }); return; }
+    const r = await api.addLocalMods(instance.id).catch(e => ({ ok: false, error: String(e) }));
+    if (r && r.ok && r.added > 0) { window.toast({ tone: "success", icon: "check", title: "Added " + r.added + " mod" + (r.added === 1 ? "" : "s") }); (onModsChanged || reloadMods)(); }
+    else if (r && !r.ok) window.toast({ tone: "danger", icon: "alert", title: "Couldn't add mods", body: r.error || "" });
+  }
+  async function handleModDrop(e) {
+    e.preventDefault(); dragCnt.current = 0; setDragOver(false);
+    if (!hasBridge || !api.addLocalModData) { window.toast({ tone: "warn", icon: "info", title: "Desktop only" }); return; }
+    const files = Array.from((e.dataTransfer && e.dataTransfer.files) || []).filter(f => /\.jar$/i.test(f.name));
+    if (!files.length) { window.toast({ tone: "warn", icon: "info", title: "Drop .jar files", body: "Only Minecraft mod .jar files can be added." }); return; }
+    let added = 0;
+    for (const f of files) {
+      if (f.size > 100 * 1024 * 1024) { window.toast({ tone: "warn", icon: "alert", title: "Too large", body: f.name + " exceeds 100 MB — use the Add .jar button." }); continue; }
+      try {
+        const b64 = await new Promise((res, rej) => { const rd = new FileReader(); rd.onload = () => res(String(rd.result).split(",")[1] || ""); rd.onerror = rej; rd.readAsDataURL(f); });
+        const rr = await api.addLocalModData(instance.id, f.name, b64);
+        if (rr && rr.ok) added++; else window.toast({ tone: "danger", icon: "alert", title: "Couldn't add " + f.name, body: (rr && rr.error) || "" });
+      } catch (err) { window.toast({ tone: "danger", icon: "alert", title: "Couldn't read " + f.name }); }
+    }
+    if (added) { window.toast({ tone: "success", icon: "check", title: "Added " + added + " mod" + (added === 1 ? "" : "s") }); (onModsChanged || reloadMods)(); }
+  }
 
   const optimCount = mods.filter(m => m.optimization).length;
   const updateCount = mods.filter(m => m.update).length;
@@ -646,6 +674,7 @@ function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge }) {
     const res = await api.setModEnabled(instance.id, m.file, want).catch(e => ({ ok: false, error: e.message }));
     if (res.ok) {
       setMods(ms => ms.map(x => x.id === m.id ? { ...x, enabled: want, file: res.file, id: instance.id + "::" + res.file } : x));
+      onModsChanged && onModsChanged();   // keep the header/tab mod count in sync (enabled jars)
     } else {
       window.toast({ tone: "error", icon: "alert", title: "Couldn't toggle mod", body: res.error || "" });
     }
@@ -791,7 +820,17 @@ function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge }) {
             React.createElement("div", { className: "mono", style: { fontSize: 11, color: "var(--text-faint)", wordBreak: "break-all", lineHeight: 1.6 } }, g.files.join("  ·  ")))))
       : React.createElement("div", { style: { marginTop: 10, fontSize: 12.5, color: "var(--text-dim)" } }, "No duplicate mod ids in " + scan.total + " mods.")));
 
-  return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 16 } },
+  return React.createElement("div", {
+    style: { display: "flex", flexDirection: "column", gap: 16, position: "relative" },
+    onDragEnter: e => { if (hasBridge) { e.preventDefault(); dragCnt.current++; setDragOver(true); } },
+    onDragOver:  e => { if (hasBridge) e.preventDefault(); },
+    onDragLeave: () => { if (hasBridge && --dragCnt.current <= 0) { dragCnt.current = 0; setDragOver(false); } },
+    onDrop: handleModDrop,
+  },
+    dragOver && React.createElement("div", { style: { position: "absolute", inset: 0, zIndex: 40, borderRadius: "var(--r-2xl)", border: "2px dashed var(--acc-2)", background: "color-mix(in oklab, var(--acc) 14%, var(--panel) 86%)", display: "grid", placeItems: "center", pointerEvents: "none" } },
+      React.createElement("div", { style: { textAlign: "center", color: "var(--acc-text)" } },
+        React.createElement(Icon, { name: "upload", size: 32 }),
+        React.createElement("div", { style: { fontSize: 14.5, fontWeight: 700, marginTop: 8 } }, "Drop .jar mods to add them"))),
     updatesCard,
     depCard,
     scanCard,
@@ -807,6 +846,7 @@ function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge }) {
           { value: "disabled", label: "Disabled " + (mods.length - enabledCount) },
         ],
       }),
+      hasBridge && React.createElement(Btn, { variant: "outline", size: "sm", icon: "upload", onClick: pickLocalMods }, "Add .jar"),
     ),
     React.createElement("div", { style: { maxHeight: 520, overflowY: "auto" } },
       filtered.length === 0
@@ -1499,8 +1539,8 @@ function HealthCard({ instance, api, hasBridge }) {
     !hasBridge && React.createElement("div", { style: { marginTop: 10, fontSize: 12.5, color: "var(--text-dim)" } }, "Available in the desktop launcher."),
     h && React.createElement("div", { style: { display: "flex", gap: 18, alignItems: "center", marginTop: 14, flexWrap: "wrap" } },
       React.createElement("div", { style: { width: 78, height: 78, borderRadius: "50%", flexShrink: 0, display: "grid", placeItems: "center", background: "conic-gradient(" + ring + " " + (score * 3.6) + "deg, var(--panel-2) 0deg)" } },
-        React.createElement("div", { style: { width: 62, height: 62, borderRadius: "50%", background: "var(--panel)", display: "grid", placeItems: "center" } },
-          React.createElement("span", { style: { fontSize: 22, fontWeight: 760, color: ring } }, score))),
+        React.createElement("div", { style: { width: 62, height: 62, borderRadius: "50%", background: "var(--panel-solid)", display: "grid", placeItems: "center" } },
+          React.createElement("span", { style: { fontSize: 22, fontWeight: 760, color: "var(--text)" } }, score))),
       React.createElement("div", { style: { flex: 1, minWidth: 240, display: "flex", flexDirection: "column", gap: 7 } },
         (h.checks || []).map((c, i) => React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", gap: 9 } },
           React.createElement(Icon, { name: ic(c.status).n, size: 14, style: { color: ic(c.status).c, flexShrink: 0 } }),

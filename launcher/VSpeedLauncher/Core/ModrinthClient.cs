@@ -37,7 +37,7 @@ public sealed class ModrinthClient
     /// Searches Modrinth for mods compatible with the given MC version + loader.
     /// Returns the raw <c>hits</c> array projected to UI-friendly objects.
     /// </summary>
-    public async Task<JsonNode?> SearchAsync(string query, string mcVersion, string loader, int offset, int limit, string projectType = "mod")
+    public async Task<JsonNode?> SearchAsync(string query, string mcVersion, string loader, int offset, int limit, string projectType = "mod", string sort = "relevance", string category = "")
     {
         var facets = new JsonArray { new JsonArray { $"project_type:{projectType}" } };
         if (!string.IsNullOrEmpty(mcVersion))
@@ -46,10 +46,14 @@ public sealed class ModrinthClient
         var lid = projectType == "mod" ? LoaderId(loader) : "";
         if (!string.IsNullOrEmpty(lid))
             facets.Add(new JsonArray { $"categories:{lid}" });
+        if (!string.IsNullOrWhiteSpace(category))
+            facets.Add(new JsonArray { $"categories:{category}" });
 
+        // Whitelist the sort index to the values Modrinth accepts.
+        var index = sort switch { "downloads" => "downloads", "updated" => "updated", "newest" => "newest", "follows" => "follows", _ => "relevance" };
         var url = $"{Base}/search?query={Uri.EscapeDataString(query ?? "")}"
                 + $"&facets={Uri.EscapeDataString(facets.ToJsonString())}"
-                + $"&limit={limit}&offset={offset}&index=relevance";
+                + $"&limit={limit}&offset={offset}&index={index}";
 
         using var resp = await _http.GetAsync(url);
         resp.EnsureSuccessStatusCode();

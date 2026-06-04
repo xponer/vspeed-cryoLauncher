@@ -53,6 +53,23 @@ function ParticleField({ active }) {
   return React.createElement("canvas", { ref, style: { position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" } });
 }
 
+/* Ambient snowfall — a quiet nod to "Cryo". Sits behind the content (shows through
+   the frosted-glass panels) and is hidden when the animations toggle is off. */
+function SnowField() {
+  const flakes = React.useMemo(() => Array.from({ length: 16 }).map(() => ({
+    left: Math.random() * 100,
+    size: 2 + Math.random() * 3.5,
+    dur: 10 + Math.random() * 12,
+    delay: -Math.random() * 22,
+    dx: Math.round(Math.random() * 50 - 25),
+  })), []);
+  return React.createElement("div", { className: "cryo-snow", "aria-hidden": true },
+    flakes.map((f, i) => React.createElement("span", {
+      key: i,
+      style: { left: f.left + "%", width: f.size, height: f.size, animationDuration: f.dur + "s", animationDelay: f.delay + "s", "--dx": f.dx + "px" },
+    })));
+}
+
 function Background({ bg }) {
   return React.createElement("div", { style: { position: "absolute", inset: 0, overflow: "hidden", zIndex: 0, pointerEvents: "none" } },
     bg !== "solid" && React.createElement("div", {
@@ -366,6 +383,7 @@ function Shell() {
 
   return React.createElement("div", { style: { height: "100%", display: "flex", flexDirection: "column", position: "relative", background: "var(--bg-0)" } },
     React.createElement(Background, { bg: settings.bg }),
+    React.createElement(SnowField, null),
     React.createElement(Titlebar, { title: titleFor(route, t), onSpotlight: () => setSpotlight(true) }),
     React.createElement("div", { style: { flex: 1, display: "flex", minHeight: 0, position: "relative", zIndex: 5 } },
       React.createElement(Sidebar, null),

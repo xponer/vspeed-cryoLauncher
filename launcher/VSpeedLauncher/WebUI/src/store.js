@@ -317,9 +317,9 @@ function createBridgeApi() {
     async exportModpack(id)               { return call("exportModpack",   { id }); },
     async importModpack()                 { return call("importModpack",   {}); },
     // ── Modrinth mod browser ──────────────────────────────────────────────────
-    async searchModrinth(query, id, offset, kind) { return call("searchModrinth", { query: query || "", id: id || "", offset: offset || 0, kind: kind || "mod" }, 30000); },
+    async searchModrinth(query, id, offset, kind, sort, category) { return call("searchModrinth", { query: query || "", id: id || "", offset: offset || 0, kind: kind || "mod", sort: sort || "relevance", category: category || "" }, 30000); },
     async getModrinthVersions(projectId, id) { return call("getModrinthVersions", { projectId, id: id || "" }, 30000); },
-    async searchCurseForge(query, id, offset, kind) { return call("searchCurseForge", { query: query || "", id: id || "", offset: offset || 0, kind: kind || "mod" }, 30000); },
+    async searchCurseForge(query, id, offset, kind, sort) { return call("searchCurseForge", { query: query || "", id: id || "", offset: offset || 0, kind: kind || "mod", sort: sort || "relevance" }, 30000); },
     async getCurseForgeFiles(projectId, id) { return call("getCurseForgeFiles", { projectId, id: id || "" }, 30000); },
     // ── Instance creation / modpack install (no Prism) ────────────────────────
     async createInstance(data)         { return call("createInstance", data || {}, 20000); },
@@ -334,6 +334,10 @@ function createBridgeApi() {
     async downloadModrinthMod(id, projectId, versionId, projectTitle) {
       return call("downloadModrinthMod", { id, projectId, versionId, projectTitle: projectTitle || "" });
     },
+    async installPerformancePack(id)      { return call("installPerformancePack", { id }); },
+    async getInstalledModIds(id)          { return call("getInstalledModIds", { id }, 60000); },
+    async addLocalMods(id)                { return call("addLocalMods", { id }, 120000); },
+    async addLocalModData(id, filename, base64) { return call("addLocalModData", { id, filename, base64 }, 120000); },
     async checkModUpdates(id)             { return call("checkModUpdates", { id }, 90000); },
     async updateMod(id, oldFile, url, newFilename, sha512) {
       return call("updateMod", { id, oldFile, url, newFilename, sha512: sha512 || "" });

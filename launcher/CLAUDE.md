@@ -111,9 +111,44 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
-### Unreleased (working tree) — quality pass (UI polish · clean code · security · perf)
+### v1.0.11 — released (GitHub) — mod workflow, filters & polish
+- **In-instance "Add mods" tab** — search Modrinth + CurseForge from inside an instance,
+  auto-filtered to its loader + MC, one-click install (with deps) straight in — no "which
+  instance?" picker. `InstanceModBrowser` (modrinth.js) reusing `ModCard`; new instance tab
+  (instance.js). Mod count + Mods tab refresh after install (`refreshMods`).
+- **VSpeed Performance pack (unique)** — one click installs curated FPS/memory mods for the
+  loader (Fabric/Quilt: Sodium, Lithium, FerriteCore, ModernFix, EntityCulling, Dynamic FPS,
+  ImmediatelyFast, Krypton; Forge/NeoForge: Embeddium, FerriteCore, ModernFix, Saturn, Canary).
+  Incompatible slugs skipped, required deps pulled one level. `CryoBridge.InstallPerformancePack`
+  → `perfPackProgress`/`perfPackDone`; accent banner at the top of the Add-mods tab.
+- **"Installed ✓" badges** — both mod browsers flag mods already present, hash-matched to
+  Modrinth project ids (`GetInstalledModIdsAsync`, reuses the CheckUpdates hashing). CurseForge-only
+  mods simply won't match (no false positives). ("Update all" already existed in the Mods tab.)
+- **Add local .jar mods** — the Mods tab gains an "Add .jar" button (native picker → `AddLocalMods`,
+  any size) and a drag-and-drop zone (reads bytes → base64 → `AddLocalModData`; ≤100 MB, .jar only,
+  path-guarded). `UseShellExecute`-free; the NavigationStarting guard also blocks file-drop navigation.
+- **Visual polish** — ambient aurora background (accent-tinted radial glows over `--bg-0`, retints
+  per theme), accent-coloured scrollbar thumb on hover.
+- **Ambient snowfall (unique)** — a quiet on-brand touch behind the content (`SnowField` in app.js,
+  z-index 1 so it shows through the frosted glass), hidden when the animations toggle is off.
+- **Mod browser filters** — both browsers (global + in-instance) gained a **Sort** (Relevance /
+  Downloads / Updated → Modrinth `index` + CurseForge `sortField`) and a **Category** selector
+  (Modrinth slugs; separate mod vs modpack lists; resets on Mods↔Modpacks; a Clear button).
+  Applies to mods AND modpacks. CurseForge keeps sort only — CF category ids are deliberately not
+  hardcoded (to avoid silently-wrong filtering), so the category selector shows for Modrinth source.
+- **Fix: Health-check score unreadable** — the ring's inner disc was `var(--panel)` (translucent),
+  so the green ring bled through and the green number blended in. Disc → `--panel-solid` (opaque),
+  number → `--text` (theme-contrast); the status colour stays on the ring (both themes verified).
+- **Fix: mod count now updates live** — adding a local `.jar` or toggling a mod in the Mods tab
+  only updated the local list; the header/tab count (`instance.mods`) stayed stale. `ModsTab` now
+  fires `onModsChanged` (→ `refreshMods`) after add/toggle so the count refreshes immediately.
+  (Installs from the Add-mods tab / Performance pack already refreshed it.)
+- All build clean (0 warn / 0 err) + load clean (verified via `WebError`/`WebLog` diagnostics);
+  **not GUI click-tested** (no UI automation this session) — eyeball the mod install/perf-pack flows.
+
+### v1.0.10 — released (GitHub) — quality pass (UI polish · clean code · security · perf)
 > A staged, four-part quality pass: **UI polish → clean code → security hardening →
-> performance**. All four steps are done in the working tree (not committed/released yet).
+> performance**. Released as v1.0.10 (commit 16adb94).
 - **Step 4 — Performance / lightweight (drop runtime Babel).** The biggest startup cost was
   **Babel-standalone**: it downloaded ~3 MB from a CDN and recompiled all 15 UI files on the
   main thread at every launch (the startup lag/jank). But the files contain **no JSX** (all

@@ -255,10 +255,11 @@ public sealed class CryoBridge
         if (method == "aiChat")              return await AiChatAsync(args);
         if (method == "accountStatus")       return await AccountStatusAsync();
         if (method == "getNeoForgeVersions") return await GetNeoForgeVersionsAsync(args.Str("mcVersion"));
-        if (method == "searchModrinth")      return await SearchModrinthAsync(args.Str("query"), args.Str("id"), args.Int("offset", 0), args.Str("kind"));
+        if (method == "searchModrinth")      return await SearchModrinthAsync(args.Str("query"), args.Str("id"), args.Int("offset", 0), args.Str("kind"), args.Str("sort"), args.Str("category"));
         if (method == "getModrinthVersions") return await GetModrinthVersionsAsync(args.Str("projectId"), args.Str("id"));
+        if (method == "getInstalledModIds")  return await GetInstalledModIdsAsync(args.Str("id"));
         if (method == "pingServer")          return await PingServerAsync(args.Str("ip"));
-        if (method == "searchCurseForge")    return await SearchCurseForgeAsync(args.Str("query"), args.Str("id"), args.Int("offset", 0), args.Str("kind"));
+        if (method == "searchCurseForge")    return await SearchCurseForgeAsync(args.Str("query"), args.Str("id"), args.Int("offset", 0), args.Str("kind"), args.Str("sort"));
         if (method == "getCurseForgeFiles")  return await GetCurseForgeFilesAsync(args.Str("projectId"), args.Str("id"));
         if (method == "checkForUpdate")      return await CheckForUpdateAsync();
         if (method == "getModpackInfo")      return await GetModpackInfoAsync(args.Str("id"));
@@ -339,6 +340,9 @@ public sealed class CryoBridge
             // ── Modrinth ───────────────────────────────────────────────────────────
             "downloadMod"         => DownloadMod(args.Str("id"), args.Str("url"), args.Str("filename"), args.Str("sha512"), args.Str("projectTitle")),
             "downloadModrinthMod" => DownloadModrinthMod(args.Str("id"), args.Str("projectId"), args.Str("versionId"), args.Str("projectTitle")),
+            "installPerformancePack" => InstallPerformancePack(args.Str("id")),
+            "addLocalMods"        => AddLocalMods(args.Str("id")),
+            "addLocalModData"     => AddLocalModData(args.Str("id"), args.Str("filename"), args.Str("base64")),
             "checkModUpdates"     => CheckModUpdates(args.Str("id")),
             "updateMod"           => UpdateMod(args.Str("id"), args.Str("oldFile"), args.Str("url"), args.Str("newFilename"), args.Str("sha512")),
             // ── Server list ────────────────────────────────────────────────────────
@@ -688,6 +692,64 @@ public sealed class CryoBridge
         {
             return new { ok = false, error = e.Message };
         }
+    }
+
+    /// <summary>Opens a native file picker for .jar files and copies them into the
+    /// instance's mods/ folder. Returns the number added (or cancelled=true).</summary>
+    private object AddLocalMods(string id)
+    {
+        if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
+        string[]? files = null;
+        void Show()
+        {
+            using var dlg = new System.Windows.Forms.OpenFileDialog
+            {
+                Title = "Add mod .jar files",
+                Filter = "Minecraft mods (*.jar)|*.jar",
+                Multiselect = true,
+                CheckFileExists = true,
+            };
+            if (dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK) files = dlg.FileNames;
+        }
+        var disp = WpfApp.Current?.Dispatcher;
+        if (disp != null && !disp.CheckAccess()) disp.Invoke(Show); else Show();
+        if (files == null || files.Length == 0) return new { ok = true, added = 0, cancelled = true };
+
+        var modsDir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "mods");
+        Directory.CreateDirectory(modsDir);
+        int added = 0; var names = new List<string>();
+        foreach (var src in files)
+        {
+            try
+            {
+                if (!src.EndsWith(".jar", StringComparison.OrdinalIgnoreCase)) continue;
+                File.Copy(src, Path.Combine(modsDir, Path.GetFileName(src)), overwrite: true);
+                names.Add(Path.GetFileName(src)); added++;
+            }
+            catch (Exception e) { Logger.Warn($"AddLocalMods copy '{Path.GetFileName(src)}': {e.Message}"); }
+        }
+        Logger.Info($"AddLocalMods({id}): added {added}");
+        return new { ok = true, added, names };
+    }
+
+    /// <summary>Writes a base64-encoded .jar (from a drag-and-drop) into mods/.</summary>
+    private object AddLocalModData(string id, string filename, string base64)
+    {
+        if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
+        try
+        {
+            var leaf = Path.GetFileName(filename ?? "");
+            if (!IsSafeSegment(leaf) || !leaf.EndsWith(".jar", StringComparison.OrdinalIgnoreCase))
+                return new { ok = false, error = "Only .jar files are allowed." };
+            var modsDir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "mods");
+            Directory.CreateDirectory(modsDir);
+            var dest = Path.Combine(modsDir, leaf);
+            if (!IsContained(modsDir, dest)) return new { ok = false, error = "Invalid path." };
+            File.WriteAllBytes(dest, Convert.FromBase64String(base64 ?? ""));
+            Logger.Info($"AddLocalModData({id}): {leaf} ({new FileInfo(dest).Length / 1024} KB)");
+            return new { ok = true, file = leaf };
+        }
+        catch (Exception e) { Logger.Warn($"AddLocalModData({id}): {e.Message}"); return new { ok = false, error = e.Message }; }
     }
 
     /// <summary>Open a URL or PrismLauncher (for New/Duplicate which Prism owns).</summary>
@@ -1467,14 +1529,14 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     /// <summary>Searches Modrinth. kind="mod" scopes to the instance's MC+loader;
     /// kind="modpack" searches modpacks (no loader filter).</summary>
-    private async Task<object?> SearchModrinthAsync(string query, string instanceId, int offset, string kind)
+    private async Task<object?> SearchModrinthAsync(string query, string instanceId, int offset, string kind, string sort, string category)
     {
         var projectType = kind == "modpack" ? "modpack" : "mod";
         try
         {
             var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
             var mcFilter = projectType == "modpack" ? "" : (meta?.Mc ?? "");
-            var node = await _modrinth.SearchAsync(query, mcFilter, meta?.Loader ?? "", offset, 20, projectType);
+            var node = await _modrinth.SearchAsync(query, mcFilter, meta?.Loader ?? "", offset, 20, projectType, sort, category);
             var hits = node?["hits"]?.AsArray();
             var list = new List<object>();
             if (hits != null)
@@ -1540,6 +1602,102 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         }
     }
 
+    // ── VSpeed Performance Pack ──────────────────────────────────────────────────
+    // One-click curated optimization mods, per loader (all on Modrinth). Slugs that
+    // don't resolve to a version compatible with the instance's MC are skipped, so
+    // the feature degrades gracefully across versions. Required deps (e.g. Fabric API)
+    // are pulled one level deep.
+    private static readonly Dictionary<string, string[]> PerfModSlugs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["fabric"]   = new[] { "sodium", "lithium", "ferrite-core", "modernfix", "entityculling", "dynamic-fps", "immediatelyfast", "krypton" },
+        ["quilt"]    = new[] { "sodium", "lithium", "ferrite-core", "modernfix", "entityculling", "dynamic-fps", "immediatelyfast", "krypton" },
+        ["forge"]    = new[] { "embeddium", "ferrite-core", "modernfix", "saturn", "canary" },
+        ["neoforge"] = new[] { "embeddium", "ferrite-core", "modernfix", "saturn" },
+    };
+
+    /// <summary>Installs the curated VSpeed performance mods for the instance's loader
+    /// into mods/ (latest compatible version each, plus required deps one level deep).
+    /// Push events: perfPackProgress / perfPackDone.</summary>
+    private object InstallPerformancePack(string instanceId)
+    {
+        if (!IsSafeSegment(instanceId)) return new { ok = false, error = "Invalid instance." };
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var meta   = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
+                var mc     = meta.Mc ?? "";
+                var loader = meta.Loader ?? "";
+                if (!PerfModSlugs.TryGetValue(loader.ToLowerInvariant(), out var slugs))
+                {
+                    Push("perfPackDone", new { ok = false, error = $"No performance pack for '{(loader.Length == 0 ? "Vanilla" : loader)}'. Use Fabric, Quilt, Forge or NeoForge." });
+                    return;
+                }
+                var modsDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "mods");
+                Directory.CreateDirectory(modsDir);
+
+                var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                int installed = 0, skipped = 0, i = 0;
+
+                // Downloads a version node's primary file (skips if already present); returns true if a file landed.
+                async Task<bool> Grab(JsonNode? ver)
+                {
+                    var pid = ver?["project_id"]?.GetValue<string>() ?? "";
+                    if (!string.IsNullOrEmpty(pid) && !visited.Add(pid)) return false;
+                    var files = ver?["files"]?.AsArray();
+                    var pf = files?.FirstOrDefault(f => f?["primary"]?.GetValue<bool>() == true) ?? (files != null && files.Count > 0 ? files[0] : null);
+                    var url = pf?["url"]?.GetValue<string>() ?? "";
+                    var fn  = pf?["filename"]?.GetValue<string>() ?? "";
+                    if (url.Length == 0 || fn.Length == 0) return false;
+                    if (!File.Exists(Path.Combine(modsDir, Path.GetFileName(fn))))
+                        await _modrinth.DownloadFileAsync(url, fn, pf?["hashes"]?["sha512"]?.GetValue<string>(), modsDir);
+                    return true;
+                }
+
+                foreach (var slug in slugs)
+                {
+                    i++;
+                    Push("perfPackProgress", new { message = $"Installing {slug}…", done = i, total = slugs.Length });
+                    try
+                    {
+                        var ver = (await _modrinth.GetVersionsAsync(slug, mc, loader) as JsonArray)?.FirstOrDefault();
+                        if (ver == null) { skipped++; continue; }
+                        if (await Grab(ver)) installed++; else { skipped++; continue; }
+
+                        // Required dependencies (e.g. Fabric API), one level deep.
+                        var deps = ver["dependencies"]?.AsArray();
+                        if (deps == null) continue;
+                        foreach (var dep in deps)
+                        {
+                            if ((dep?["dependency_type"]?.GetValue<string>() ?? "") != "required") continue;
+                            var dvid = dep?["version_id"]?.GetValue<string>();
+                            var dpid = dep?["project_id"]?.GetValue<string>();
+                            if (!string.IsNullOrEmpty(dpid) && visited.Contains(dpid)) continue;
+                            try
+                            {
+                                JsonNode? dver = !string.IsNullOrWhiteSpace(dvid)
+                                    ? await _modrinth.GetVersionAsync(dvid!)
+                                    : (!string.IsNullOrWhiteSpace(dpid) ? (await _modrinth.GetVersionsAsync(dpid!, mc, loader) as JsonArray)?.FirstOrDefault() : null);
+                                if (dver != null && await Grab(dver)) installed++;
+                            }
+                            catch (Exception de) { Logger.Warn($"PerfPack dep {dpid}/{dvid}: {de.Message}"); }
+                        }
+                    }
+                    catch (Exception e) { skipped++; Logger.Warn($"PerfPack {slug}: {e.Message}"); }
+                }
+
+                Logger.Info($"PerformancePack({instanceId}): installed={installed}, skipped={skipped}");
+                Push("perfPackDone", new { ok = true, installed, skipped });
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"InstallPerformancePack({instanceId}): {e.Message}");
+                Push("perfPackDone", new { ok = false, error = e.Message });
+            }
+        });
+        return new { ok = true };
+    }
+
     // ── CurseForge (optional second source for the mod browser) ──────────────────
 
     private static readonly CurseForgeClient _curse = new();
@@ -1556,16 +1714,17 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     private const string CurseSetupHint =
         "CurseForge isn't set up. Add a free API key from console.curseforge.com in Settings → Assistant (or embed one app-wide — see CLAUDE.md).";
 
-    private async Task<object?> SearchCurseForgeAsync(string query, string instanceId, int offset, string kind)
+    private async Task<object?> SearchCurseForgeAsync(string query, string instanceId, int offset, string kind, string sort)
     {
         var key = EffectiveCurseKey();
         if (string.IsNullOrEmpty(key)) return new { ok = false, error = CurseSetupHint, hits = Array.Empty<object>() };
         var classId = kind == "modpack" ? CurseForgeClient.ClassModpacks : 6;
+        var sortField = sort switch { "downloads" => 6, "updated" => 3, _ => 2 };   // 2 = Popularity
         try
         {
             var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
             var mcFilter = kind == "modpack" ? "" : (meta?.Mc ?? "");
-            var node = await _curse.SearchAsync(key, query, mcFilter, meta?.Loader ?? "", offset, 20, classId);
+            var node = await _curse.SearchAsync(key, query, mcFilter, meta?.Loader ?? "", offset, 20, classId, sortField);
             var data = node?["data"]?.AsArray();
             var list = new List<object>();
             if (data != null)
@@ -1805,6 +1964,38 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             }
         });
         return new { ok = true };
+    }
+
+    /// <summary>Returns the Modrinth project ids of the instance's installed jars,
+    /// matched by SHA-512 hash, so the mod browser can flag mods already present.
+    /// (CurseForge-only mods simply won't match — best-effort, no false positives.)</summary>
+    private async Task<object> GetInstalledModIdsAsync(string instanceId)
+    {
+        if (!IsSafeSegment(instanceId)) return new { ok = false, ids = Array.Empty<string>() };
+        try
+        {
+            var meta    = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
+            var modsDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "mods");
+            if (!Directory.Exists(modsDir)) return new { ok = true, ids = Array.Empty<string>() };
+
+            var hashes = new List<string>();
+            foreach (var f in Directory.GetFiles(modsDir, "*.jar"))
+                hashes.Add(Convert.ToHexString(System.Security.Cryptography.SHA512.HashData(await File.ReadAllBytesAsync(f))).ToLowerInvariant());
+
+            var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (hashes.Count > 0)
+            {
+                var result = await _modrinth.CheckUpdatesAsync(hashes, meta.Mc, meta.Loader);
+                if (result is JsonObject map)
+                    foreach (var kv in map)
+                    {
+                        var pid = kv.Value?["project_id"]?.GetValue<string>();
+                        if (!string.IsNullOrEmpty(pid)) ids.Add(pid!);
+                    }
+            }
+            return new { ok = true, ids = ids.ToList() };
+        }
+        catch (Exception e) { Logger.Warn($"GetInstalledModIds({instanceId}): {e.Message}"); return new { ok = false, ids = Array.Empty<string>() }; }
     }
 
     /// <summary>Downloads a newer mod jar and removes the old one.

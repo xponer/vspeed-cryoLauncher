@@ -9,6 +9,7 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
   const { api, hasBridge, t, fmt, navigate } = useApp();
   const { OverviewTab } = window.CryoOverview;
   const { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard, HealthCard, ScreenshotsTab } = window.CryoInstanceTabs;
+  const { InstanceModBrowser } = window.CryoModrinth;
 
   const [state, setState] = dS("loading");
   const [data, setData] = dS(null);
@@ -172,6 +173,18 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
     setStatus("idle"); setModelT(0);
   }, [hasBridge, data]);
 
+  // Light refresh after installing a mod from the "Add mods" tab — updates the mod
+  // count badge + the Mods tab without the full loading skeleton flashing.
+  const refreshMods = dC(async () => {
+    if (!hasBridge) return;
+    const [mR, iR] = await Promise.allSettled([api.getMods(id), api.getInstance(id)]);
+    setData(prev => prev ? {
+      ...prev,
+      mods: mR.status === "fulfilled" ? mR.value : prev.mods,
+      instance: iR.status === "fulfilled" ? { ...prev.instance, mods: iR.value.mods } : prev.instance,
+    } : prev);
+  }, [hasBridge, id]);
+
   dE(() => {
     if (autoLaunch && state === "ready" && status === "idle") {
       const tid = setTimeout(startLaunch, 350);
@@ -192,6 +205,7 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
     { value: "overview",     label: t("tab.overview"),     icon: "activity" },
     { value: "performance",  label: t("tab.performance"),  icon: "zap" },
     { value: "mods",         label: t("tab.mods"),         icon: "package", badge: instance.mods },
+    { value: "addmods",      label: "Add mods",            icon: "download" },
     { value: "worlds",       label: "Worlds",              icon: "globe" },
     { value: "servers",      label: "Servers",             icon: "globe" },
     { value: "screenshots",  label: "Screenshots",         icon: "image" },
@@ -249,7 +263,8 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
       tab === "performance" && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } },
         React.createElement(HealthCard, { instance, api, hasBridge }),
         React.createElement(PerformanceTab, { instance, cache, t, fmt, api, hasBridge })),
-      tab === "mods"        && React.createElement(ModsTab, { instance, mods, t, fmt, api, hasBridge }),
+      tab === "mods"        && React.createElement(ModsTab, { instance, mods, t, fmt, api, hasBridge, onModsChanged: refreshMods }),
+      tab === "addmods"     && React.createElement(InstanceModBrowser, { instance, api, hasBridge, onChanged: refreshMods }),
       tab === "worlds"      && React.createElement(WorldsTab, { instance, api, hasBridge, fmt }),
       tab === "servers"     && React.createElement(ServersTab, { instance, api, hasBridge }),
       tab === "screenshots" && React.createElement(ScreenshotsTab, { instance, api, hasBridge }),
