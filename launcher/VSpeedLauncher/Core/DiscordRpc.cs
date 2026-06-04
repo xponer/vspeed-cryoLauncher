@@ -23,6 +23,11 @@ public sealed class DiscordRpc : IDisposable
 
     public bool Connected => _connected;
 
+    /// <summary>Public Rich Presence application (client) ID, embedded so presence
+    /// works for everyone with no setup. Discord app IDs are NOT secret — they're
+    /// visible in the presence itself — so shipping it in source is fine.</summary>
+    public const string EmbeddedClientId = "1511714297384927313";
+
     /// <summary>Connects and performs the IPC handshake for the given client ID.
     /// Safe to call repeatedly; reconnects only if the client ID changed.</summary>
     public bool Connect(string clientId)

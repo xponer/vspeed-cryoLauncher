@@ -105,6 +105,7 @@ function ModrinthScreen() {
   const [kind, setKind]     = mrS("mod");        // "mod" | "modpack"
   const [curseKey, setCurseKey] = mrS(false);
   const [packProg, setPackProg] = mrS(null);     // modpack install progress { message, done, total }
+  const [rootPick, setRootPick] = mrS(null);     // { hit, version, roots } when choosing an install location
   const debounceRef = mrR(null);
 
   const inst = insts.find(i => i.id === instId);
@@ -167,10 +168,20 @@ function ModrinthScreen() {
 
   // Modpack install handler + progress listeners
   function onModpackInstall(hit, version) {
+    // Ask which location only when more than one is configured; otherwise install
+    // straight into the primary (targetRoot "" → primary on the C# side).
+    api.getInstanceRoots().then(r => {
+      const roots = (r && r.roots) || [];
+      if (roots.length > 1) setRootPick({ hit, version, roots });
+      else doInstall(hit, version, "");
+    }).catch(() => doInstall(hit, version, ""));
+  }
+  function doInstall(hit, version, targetRoot) {
+    setRootPick(null);
     setPackProg({ message: "Starting…", done: 0, total: 0 });
     const p = source === "curseforge"
-      ? api.installCurseForgeModpack(hit.projectId, version.versionId, hit.title)
-      : api.installModrinthModpack(hit.projectId, version.versionId, hit.title);
+      ? api.installCurseForgeModpack(hit.projectId, version.versionId, hit.title, targetRoot)
+      : api.installModrinthModpack(hit.projectId, version.versionId, hit.title, targetRoot);
     p.catch(e => { setPackProg(null); window.toast({ tone: "danger", icon: "alert", title: "Install failed", body: String(e) }); });
   }
   mrE(() => {
@@ -227,6 +238,28 @@ function ModrinthScreen() {
         React.createElement("div", { style: { height: 8, borderRadius: 99, background: "var(--panel-2)", overflow: "hidden" } },
           React.createElement("div", { style: { height: "100%", width: (packProg.total > 0 ? Math.round(packProg.done / packProg.total * 100) : 8) + "%", background: "var(--acc-grad)", transition: "width .3s", animation: packProg.total > 0 ? "none" : "shimmer 1.4s linear infinite", backgroundSize: "200% 100%" } })),
         React.createElement("div", { style: { fontSize: 11, color: "var(--text-faint)", marginTop: 10 } }, "Keep this window open — downloading mods and config…"))),
+
+    // Choose install location (only shown when >1 instance folder is configured)
+    rootPick && React.createElement("div", {
+      onMouseDown: e => { if (e.target === e.currentTarget) setRootPick(null); },
+      style: { position: "fixed", inset: 0, zIndex: 760, display: "grid", placeItems: "center", background: "rgba(0,0,0,.6)", backdropFilter: "blur(8px)" },
+    },
+      React.createElement("div", { className: "glass-pop anim-fadein", style: { width: 470, borderRadius: "var(--r-xl)", padding: 24 }, onMouseDown: e => e.stopPropagation() },
+        React.createElement("h3", { style: { margin: "0 0 4px", fontSize: 17, fontWeight: 700 } }, "Install where?"),
+        React.createElement("p", { style: { margin: "0 0 16px", fontSize: 12.5, color: "var(--text-dim)" } },
+          "Choose which location to install ", React.createElement("strong", null, rootPick.hit.title || "this pack"), " into."),
+        React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          rootPick.roots.map(r => React.createElement("button", {
+            key: r.path, className: "no-drag", onClick: () => doInstall(rootPick.hit, rootPick.version, r.path),
+            style: { display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: "var(--r-md)", border: "1px solid var(--border)", background: "var(--panel-2)", textAlign: "left", color: "var(--text)" },
+          },
+            React.createElement(Icon, { name: "folder", size: 16, style: { color: "var(--text-dim)", flexShrink: 0 } }),
+            React.createElement("div", { style: { minWidth: 0, flex: 1 } },
+              React.createElement("div", { style: { fontSize: 12.5, fontFamily: "var(--font-mono)", wordBreak: "break-all" } }, r.path),
+              React.createElement("div", { style: { fontSize: 11, color: "var(--text-faint)", marginTop: 1 } }, (r.primary ? "Primary · " : "") + (r.count || 0) + " instance(s)"))))),
+        React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", marginTop: 16 } },
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setRootPick(null) }, "Cancel"))),
+    ),
 
     // Results
     React.createElement("div", { style: { flex: 1, overflowY: "auto", padding: "4px 30px 24px", minHeight: 0 } },

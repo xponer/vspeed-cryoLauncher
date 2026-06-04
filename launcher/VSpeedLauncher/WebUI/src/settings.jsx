@@ -125,11 +125,6 @@ function JavaSection({ settings, update, t, api, hasBridge }) {
         React.createElement(Toggle, { checked: cfg.autoHideOnLaunch, onChange: v => saveCfg({ autoHideOnLaunch: v }) })),
       React.createElement(Row, { label: t("cfg.showOnLaunch") },
         React.createElement(Toggle, { checked: cfg.showOnLaunch, onChange: v => saveCfg({ showOnLaunch: v }) })),
-      React.createElement(Row, { label: "PrismLauncher path" },
-        React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center" } },
-          React.createElement("code", { style: { fontSize: 11, color: "var(--text-dim)", wordBreak: "break-all", fontFamily: "var(--font-mono)" } }, cfg.prismExe || "(auto-detected)"),
-          saving && React.createElement(Spinner, { size: 14 }),
-        )),
     ),
   );
 }
@@ -237,35 +232,17 @@ function NotifSection({ t, api, hasBridge }) {
 
 function DiscordSection({ t, api, hasBridge }) {
   const [cfg, setCfg] = sgS(null);
-  const [cid, setCid] = sgS("");
-  const [saving, setSaving] = sgS(false);
 
   sgE(() => { if (hasBridge) api.getConfig().then(setCfg).catch(() => {}); }, [hasBridge]);
 
-  async function saveId() {
-    if (!hasBridge || !cid.trim()) return;
-    setSaving(true);
-    try { await api.saveConfig({ discordClientId: cid.trim() }); setCid(""); setCfg(c => ({ ...(c || {}), discordHasId: true })); window.toast({ tone: "success", icon: "check", title: "Discord App ID saved" }); }
-    finally { setSaving(false); }
-  }
   function toggle(v) { setCfg(c => ({ ...(c || {}), discordEnabled: v })); if (hasBridge) api.saveConfig({ discordEnabled: v }).catch(() => {}); }
-
-  const inp = { height: 37, padding: "0 11px", borderRadius: "var(--r-md)", background: "var(--panel-2)", border: "1px solid var(--border)", color: "var(--text)", fontSize: 13, width: "100%", outline: "none", fontFamily: "inherit" };
 
   return React.createElement(SectionCard, { id: "discord", icon: "activity", title: t("cfg.discord") },
     React.createElement("p", { style: { margin: "0 0 10px", fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5 } },
-      "Show \"Playing <modpack>\" in your Discord status while a game runs. Create a free application at discord.com/developers, copy its Application ID, and (optionally) upload an art asset named \"cryo\". Requires the Discord desktop app running."),
+      "Show \"Playing <modpack>\" in your Discord status while a game runs. Requires the Discord desktop app to be running — no setup needed."),
     !hasBridge && React.createElement("div", { style: { fontSize: 12.5, color: "var(--text-dim)" } }, "Available in the desktop launcher."),
-    hasBridge && React.createElement(React.Fragment, null,
-      React.createElement(Row, { label: "Enable Rich Presence", desc: cfg && cfg.discordHasId ? "An App ID is saved" : "Set an Application ID below first" },
-        React.createElement(Toggle, { checked: cfg ? !!cfg.discordEnabled : false, onChange: toggle })),
-      React.createElement(Row, { label: "Application ID", desc: cfg && cfg.discordHasId ? "Saved — type to replace" : "From discord.com/developers → your app" },
-        React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", width: 380 } },
-          React.createElement("input", { value: cid, onChange: e => setCid(e.target.value), placeholder: cfg && cfg.discordHasId ? "•••• saved" : "1234567890…", style: inp, className: "no-drag" }),
-          React.createElement(Btn, { variant: "primary", size: "sm", disabled: !cid.trim() || saving, iconSpin: saving, icon: saving ? "refresh" : null, onClick: saveId }, "Save"))),
-      React.createElement(Row, { label: "Create an app" },
-        React.createElement(Btn, { variant: "outline", size: "sm", icon: "globe", onClick: () => (api.openUrl ? api.openUrl("https://discord.com/developers/applications") : null) }, "Open Discord Developers")),
-    ),
+    hasBridge && React.createElement(Row, { label: "Enable Rich Presence", desc: "Shows your current pack / instance in your Discord status" },
+      React.createElement(Toggle, { checked: cfg ? !!cfg.discordEnabled : false, onChange: toggle })),
   );
 }
 
@@ -618,9 +595,62 @@ function ProfilesSection({ t, api, hasBridge }) {
   );
 }
 
+function InstanceLocationsSection({ t, api, hasBridge }) {
+  const [roots, setRoots] = sgS([]);
+  const [busy, setBusy] = sgS(false);
+
+  function load() { if (hasBridge) api.getInstanceRoots().then(r => setRoots((r && r.roots) || [])).catch(() => {}); }
+  sgE(() => { load(); }, [hasBridge]);
+
+  async function add() {
+    if (!hasBridge || busy) return;
+    setBusy(true);
+    try {
+      const f = await api.pickFolder();
+      if (f && f.ok && f.path) {
+        const r = await api.addInstanceRoot(f.path);
+        if (r && r.ok) { load(); window.toast({ tone: "success", icon: "check", title: "Location added", body: (r.added || 0) + " instance(s) found" }); }
+        else window.toast({ tone: "danger", icon: "alert", title: "Couldn't add", body: (r && r.error) || "" });
+      }
+    } finally { setBusy(false); }
+  }
+  async function remove(path) {
+    if (!hasBridge) return;
+    if (!window.confirm("Remove this location from Cryo?\n\nThe folder and its files are NOT deleted — its instances just stop showing here.")) return;
+    const r = await api.removeInstanceRoot(path).catch(() => null);
+    if (r && r.ok) { load(); window.toast({ tone: "neutral", icon: "trash", title: "Location removed" }); }
+  }
+  async function makePrimary(path) {
+    const r = await api.setPrimaryRoot(path).catch(() => null);
+    if (r && r.ok) { load(); window.toast({ tone: "success", icon: "check", title: "Primary location set", body: "New installs default here" }); }
+  }
+
+  return React.createElement(SectionCard, { id: "instances", icon: "folder", title: t("cfg.instances") },
+    React.createElement("p", { style: { margin: "0 0 12px", fontSize: 12, color: "var(--text-faint)", lineHeight: 1.5 } },
+      "Folders Cryo scans for instances. Each is a Prism-style folder that contains an \"instances\" subfolder. Add another to keep packs on a different drive — when you install a modpack and have more than one, Cryo asks where to put it."),
+    !hasBridge && React.createElement("div", { style: { fontSize: 12.5, color: "var(--text-dim)" } }, "Available in the desktop launcher."),
+    hasBridge && React.createElement(React.Fragment, null,
+      React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 12 } },
+        roots.length === 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--text-dim)" } }, "No locations configured."),
+        roots.map(r => React.createElement("div", { key: r.path, style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: "var(--r-md)", background: "var(--panel-2)", border: "1px solid var(--border)" } },
+          React.createElement(Icon, { name: r.exists ? "folder" : "alert", size: 15, style: { color: r.exists ? "var(--text-dim)" : "#f1c40f", flexShrink: 0 } }),
+          React.createElement("div", { style: { minWidth: 0, flex: 1 } },
+            React.createElement("div", { style: { fontSize: 12.5, color: "var(--text)", fontFamily: "var(--font-mono)", wordBreak: "break-all" } }, r.path),
+            React.createElement("div", { style: { fontSize: 11, color: "var(--text-faint)", marginTop: 1 } },
+              (r.primary ? "Primary · " : "") + (r.count || 0) + " instance(s)" + (r.exists ? "" : " · folder missing"))),
+          React.createElement("div", { style: { display: "flex", gap: 4, flexShrink: 0 } },
+            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "folderOpen", onClick: () => api.openPath(r.path) }, "Open"),
+            !r.primary && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "check", onClick: () => makePrimary(r.path) }, "Primary"),
+            !r.primary && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "trash", onClick: () => remove(r.path) }, "Remove")))),
+      ),
+      React.createElement(Btn, { variant: "outline", size: "sm", icon: busy ? "refresh" : "plus", iconSpin: busy, disabled: busy, onClick: add }, "Add location…"),
+    ),
+  );
+}
+
 const SETTINGS_NAV = [
   ["account", "globe", "cfg.account"],
-  ["appearance", "palette", "cfg.appearance"], ["java", "cpu", "cfg.java"], ["cache", "database", "cfg.cache"],
+  ["appearance", "palette", "cfg.appearance"], ["java", "cpu", "cfg.java"], ["instances", "folder", "cfg.instances"], ["cache", "database", "cfg.cache"],
   ["profiles", "sliders", "cfg.profiles"],
   ["diagnostics", "gauge", "cfg.diagnostics"], ["assistant", "sparkles", "cfg.assistant"],
   ["hotkeys", "keyboard", "cfg.hotkeys"], ["notif", "bell", "cfg.notif"], ["discord", "activity", "cfg.discord"], ["about", "info", "cfg.about"],
@@ -679,6 +709,7 @@ function SettingsScreen() {
       React.createElement(AccountSection, { t, api, hasBridge }),
       React.createElement(AppearanceSection, { settings, update, t }),
       React.createElement(JavaSection, { settings, update, t, api, hasBridge }),
+      React.createElement(InstanceLocationsSection, { t, api, hasBridge }),
       React.createElement(CacheSection, { t, fmt, api, hasBridge }),
       React.createElement(ProfilesSection, { t, api, hasBridge }),
       React.createElement(DiagnosticsSection, { t, api, hasBridge }),

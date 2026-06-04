@@ -34,6 +34,7 @@ public sealed class ConfigStore
         {
             var json = File.ReadAllText(_path);
             Data = JsonSerializer.Deserialize<Config>(json, _opts) ?? Config.Default();
+            MigrateInstanceRoots();
         }
         catch (Exception e)
         {
@@ -54,6 +55,20 @@ public sealed class ConfigStore
         }
     }
 
+    /// <summary>Back-compat for configs written before multi-root support: seed
+    /// <see cref="Config.InstanceRoots"/> from the old PrismDataDir and tag any
+    /// untagged instances with the primary root.</summary>
+    private void MigrateInstanceRoots()
+    {
+        Data.InstanceRoots ??= new();
+        if (Data.InstanceRoots.Count == 0 && !string.IsNullOrWhiteSpace(Data.PrismDataDir))
+            Data.InstanceRoots.Add(Data.PrismDataDir);
+        var primary = Data.InstanceRoots.Count > 0 ? Data.InstanceRoots[0] : Data.PrismDataDir;
+        foreach (var e in Data.Instances)
+            if (string.IsNullOrWhiteSpace(e.DataDir))
+                e.DataDir = primary;
+    }
+
     private static readonly JsonSerializerOptions _opts = new()
     {
         WriteIndented          = true,
@@ -67,6 +82,10 @@ public sealed class Config
 {
     public string PrismExe          { get; set; } = "";
     public string PrismDataDir      { get; set; } = "";
+    /// <summary>Folders that contain instances (Prism-style data dirs, each with an
+    /// <c>instances/</c> subfolder). All are scanned and shown together; when a
+    /// modpack is installed and more than one exists, the user picks the target.</summary>
+    public List<string> InstanceRoots { get; set; } = new();
     public bool   ShowOnLaunch      { get; set; } = true;
     public bool   AutoHibernate     { get; set; } = true;
     public bool   StartWithWindows  { get; set; } = false;
@@ -117,30 +136,42 @@ public sealed class Config
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Programs", "PrismLauncher", "prismlauncher.exe");
 
+        var roots = new List<string>();
+        if (Directory.Exists(prismData)) roots.Add(prismData);
+
         return new Config
         {
-            PrismExe     = File.Exists(prismExe) ? prismExe : "",
-            PrismDataDir = Directory.Exists(prismData) ? prismData : "",
-            Instances    = DiscoverInstances(prismData),
+            PrismExe      = File.Exists(prismExe) ? prismExe : "",
+            PrismDataDir  = Directory.Exists(prismData) ? prismData : "",
+            InstanceRoots = roots,
+            Instances     = DiscoverInstances(roots),
         };
     }
 
-    /// <summary>Quick scan of the Prism instances directory to pre-populate the list.</summary>
-    private static List<InstanceEntry> DiscoverInstances(string prismDataDir)
+    /// <summary>Scan every instance root (a Prism-style data dir with an
+    /// <c>instances/</c> folder) and build the list, tagging each entry with the
+    /// root it lives under. First root wins if the same id appears in two roots.</summary>
+    public static List<InstanceEntry> DiscoverInstances(IEnumerable<string> roots)
     {
         var list = new List<InstanceEntry>();
-        var instances = Path.Combine(prismDataDir, "instances");
-        if (!Directory.Exists(instances)) return list;
-        foreach (var dir in Directory.EnumerateDirectories(instances))
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var root in roots)
         {
-            var cfg = Path.Combine(dir, "instance.cfg");
-            if (!File.Exists(cfg)) continue;
-            var id = Path.GetFileName(dir);
-            var name = id;
-            foreach (var line in File.ReadAllLines(cfg))
-                if (line.StartsWith("name=", StringComparison.Ordinal))
-                    { name = line[5..]; break; }
-            list.Add(new InstanceEntry { Id = id, DisplayName = name });
+            if (string.IsNullOrWhiteSpace(root)) continue;
+            var instances = Path.Combine(root, "instances");
+            if (!Directory.Exists(instances)) continue;
+            foreach (var dir in Directory.EnumerateDirectories(instances))
+            {
+                var cfg = Path.Combine(dir, "instance.cfg");
+                if (!File.Exists(cfg)) continue;
+                var id = Path.GetFileName(dir);
+                if (!seen.Add(id)) continue;
+                var name = id;
+                foreach (var line in File.ReadAllLines(cfg))
+                    if (line.StartsWith("name=", StringComparison.Ordinal))
+                        { name = line[5..]; break; }
+                list.Add(new InstanceEntry { Id = id, DisplayName = name, DataDir = root });
+            }
         }
         return list;
     }
@@ -183,4 +214,7 @@ public sealed class InstanceEntry
     /// <summary>"prism" = launched via PrismLauncher (default);
     /// "cryo" = launched directly via CmlLib engine.</summary>
     public string Source      { get; set; } = "prism";
+    /// <summary>The instance-root (Prism-style data dir) this instance lives under;
+    /// its folder is <c>&lt;DataDir&gt;/instances/&lt;Id&gt;</c>. Empty = primary/legacy root.</summary>
+    public string DataDir     { get; set; } = "";
 }

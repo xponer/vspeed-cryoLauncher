@@ -250,6 +250,14 @@ function createBridgeApi() {
     async saveInstanceCfg(id, data)     { return call("saveInstanceCfg",   { id, ...data }); },
     async detectJavas(id)               { return call("detectJavas",       { id }, 15000); },
     async getSystemRam()                { return call("getSystemRam",      {}); },
+    // ── Instance locations (folders) ──────────────────────────────────────────
+    async getInstanceRoots()            { return call("getInstanceRoots",   {}); },
+    async addInstanceRoot(path)         { return call("addInstanceRoot",    { path }); },
+    async removeInstanceRoot(path)      { return call("removeInstanceRoot", { path }); },
+    async pickFolder()                  { return call("pickFolder",         {}, 600000); },
+    async setPrimaryRoot(path)          { return call("setPrimaryRoot",     { path }); },
+    async openPath(path)                { return call("openPath",           { path }); },
+    async moveInstance(id, targetRoot)  { return call("moveInstance",       { id, targetRoot }); },
     // ── Shell / file actions ──────────────────────────────────────────────────
     async setModEnabled(id, file, en)   { return call("setModEnabled",      { id, file, enabled: !!en }); },
     async openUrl(url)                  { return call("openUrl",            { url }); },
@@ -278,8 +286,8 @@ function createBridgeApi() {
     // ── Instance creation / modpack install (no Prism) ────────────────────────
     async createInstance(data)         { return call("createInstance", data || {}, 20000); },
     async duplicateInstance(id)        { return call("duplicateInstance", { id }); },
-    async installModrinthModpack(projectId, versionId, name) { return call("installModrinthModpack", { projectId, versionId, name: name || "" }); },
-    async installCurseForgeModpack(projectId, fileId, name)  { return call("installCurseForgeModpack", { projectId, fileId, name: name || "" }); },
+    async installModrinthModpack(projectId, versionId, name, targetRoot) { return call("installModrinthModpack", { projectId, versionId, name: name || "", targetRoot: targetRoot || "" }); },
+    async installCurseForgeModpack(projectId, fileId, name, targetRoot)  { return call("installCurseForgeModpack", { projectId, fileId, name: name || "", targetRoot: targetRoot || "" }); },
     async getModpackInfo(id)              { return call("getModpackInfo",  { id }, 30000); },
     async updateModpack(id)               { return call("updateModpack",   { id }); },
     async downloadMod(id, url, filename, sha512, projectTitle) {

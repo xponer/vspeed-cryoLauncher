@@ -85,7 +85,7 @@ public sealed class CryoBridge
     public void UpdateDiscordPresence()
     {
         var enabled  = _config.Data.DiscordEnabled;
-        var clientId = (_config.Data.DiscordClientId ?? "").Trim();
+        var clientId = DiscordRpc.EmbeddedClientId;   // embedded public app ID (no user setup)
         _ = Task.Run(() =>
         {
             try
@@ -112,7 +112,7 @@ public sealed class CryoBridge
 
     private InstanceMeta? ReadMetaSafe(string id)
     {
-        try { return InstanceMetaReader.Read(id, _prismDataDir); } catch { return null; }
+        try { return InstanceMetaReader.Read(id, InstanceDataDir(id)); } catch { return null; }
     }
 
     // ── Auto-update (Velopack + GitHub Releases) ─────────────────────────────
@@ -322,9 +322,16 @@ public sealed class CryoBridge
             "clearAiMemory"       => ClearAiMemory(args.Str("id")),
             // ── Instance creation / modpack install (no Prism) ─────────────────────
             "createInstance"      => CreateInstance(args),
+            "getInstanceRoots"    => GetInstanceRoots(),
+            "addInstanceRoot"     => AddInstanceRoot(args.Str("path")),
+            "removeInstanceRoot"  => RemoveInstanceRoot(args.Str("path")),
+            "pickFolder"          => PickFolder(),
+            "setPrimaryRoot"      => SetPrimaryRoot(args.Str("path")),
+            "openPath"            => OpenPath(args.Str("path")),
+            "moveInstance"        => MoveInstance(args.Str("id"), args.Str("targetRoot")),
             "duplicateInstance"   => DuplicateInstance(args.Str("id")),
-            "installModrinthModpack"   => InstallModrinthModpack(args.Str("projectId"), args.Str("versionId"), args.Str("name")),
-            "installCurseForgeModpack" => InstallCurseForgeModpack(args.Str("projectId"), args.Str("fileId"), args.Str("name")),
+            "installModrinthModpack"   => InstallModrinthModpack(args.Str("projectId"), args.Str("versionId"), args.Str("name"), args.Str("targetRoot")),
+            "installCurseForgeModpack" => InstallCurseForgeModpack(args.Str("projectId"), args.Str("fileId"), args.Str("name"), args.Str("targetRoot")),
             "updateModpack"            => UpdateModpack(args.Str("id")),
             // ── Modpack Export / Import ────────────────────────────────────────────
             "exportModpack"       => ExportModpack(args.Str("id")),
@@ -448,7 +455,7 @@ public sealed class CryoBridge
     }
 
     private InstanceMeta ReadMeta(string id)
-        => InstanceMetaReader.Read(id, _prismDataDir);
+        => InstanceMetaReader.Read(id, InstanceDataDir(id));
 
     private static void Merge(InstanceMeta meta, RunningInstance inst)
     {
@@ -478,7 +485,7 @@ public sealed class CryoBridge
 
     private object GetCache(string id)
     {
-        var dir  = Path.Combine(_prismDataDir, "instances", id);
+        var dir  = Path.Combine(InstanceDataDir(id), "instances", id);
         var info = InstanceMetaReader.ReadCacheInfo(dir);
         var state = info.TotalSizeBytes > 0 ? "ready" : "off";
 
@@ -517,7 +524,7 @@ public sealed class CryoBridge
 
     private object GetMods(string id)
     {
-        var modsDir = Path.Combine(_prismDataDir, "instances", id, "minecraft", "mods");
+        var modsDir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "mods");
         if (!Directory.Exists(modsDir)) return Array.Empty<object>();
 
         var knownOptim = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -561,7 +568,7 @@ public sealed class CryoBridge
     /// <summary>Enable/disable a mod by renaming its jar ↔ jar.disabled.</summary>
     private object SetModEnabled(string id, string file, bool enabled)
     {
-        var modsDir = Path.Combine(_prismDataDir, "instances", id, "minecraft", "mods");
+        var modsDir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "mods");
         var current = Path.Combine(modsDir, file);
         if (!File.Exists(current))
             return new { ok = false, error = "Mod file not found: " + file };
@@ -610,7 +617,7 @@ public sealed class CryoBridge
     /// </summary>
     private object SetProfileNextLaunch(string id, bool on)
     {
-        var cfgPath = Path.Combine(_prismDataDir, "instances", id, "instance.cfg");
+        var cfgPath = Path.Combine(InstanceDataDir(id), "instances", id, "instance.cfg");
         if (!File.Exists(cfgPath)) return new { ok = false, error = "instance.cfg not found" };
         const string FLAG = "-XX:StartFlightRecording=filename=vspeed-boot.jfr";
 
@@ -649,13 +656,13 @@ public sealed class CryoBridge
     // ── Logs ──────────────────────────────────────────────────────────────────
 
     private object GetLogs(string id, int n)
-        => LogReader.Read(id, _prismDataDir, n);
+        => LogReader.Read(id, InstanceDataDir(id), n);
 
     // ── Boot timeline (waterfall derived from real log timestamps) ──────────────
 
     private object GetBootTimeline(string id)
     {
-        var entries = LogReader.Read(id, _prismDataDir, 30000);
+        var entries = LogReader.Read(id, InstanceDataDir(id), 30000);
         if (entries.Count == 0) return new { ok = false, error = "No log found for this instance yet." };
 
         long start = entries[0].T;
@@ -712,7 +719,7 @@ public sealed class CryoBridge
 
     private object RebuildCache(string id)
     {
-        var cacheDir = Path.Combine(_prismDataDir, "instances", id,
+        var cacheDir = Path.Combine(InstanceDataDir(id), "instances", id,
                                     "minecraft", ".vspeed-cache", "json");
         if (Directory.Exists(cacheDir))
         {
@@ -723,6 +730,188 @@ public sealed class CryoBridge
     }
 
     // ── Launch / Stop / Hibernate / Wake ──────────────────────────────────────
+
+    /// <summary>The instance-root (Prism-style data dir) the given instance lives under:
+    /// resolved from its registry entry, then any configured root that actually contains
+    /// it, then the primary root / legacy PrismDataDir. Its folder is
+    /// <c>&lt;root&gt;/instances/&lt;id&gt;</c>.</summary>
+    private string InstanceDataDir(string id)
+    {
+        var tagged = _config.Data.Instances.FirstOrDefault(e => e.Id == id)?.DataDir;
+        if (!string.IsNullOrWhiteSpace(tagged)) return tagged!;
+        var roots = _config.Data.InstanceRoots;
+        if (roots != null)
+        {
+            foreach (var r in roots)
+                if (!string.IsNullOrWhiteSpace(r) && Directory.Exists(Path.Combine(r, "instances", id)))
+                    return r;
+            if (roots.Count > 0 && !string.IsNullOrWhiteSpace(roots[0])) return roots[0];
+        }
+        return _prismDataDir;
+    }
+
+    private string PrimaryRoot()
+    {
+        foreach (var r in _config.Data.InstanceRoots)
+            if (!string.IsNullOrWhiteSpace(r)) return r;
+        return _prismDataDir ?? "";
+    }
+
+    /// <summary>Validates a requested target root against the configured locations;
+    /// falls back to the primary root when empty/unknown.</summary>
+    private string ResolveTargetRoot(string requested)
+    {
+        var req = (requested ?? "").Trim();
+        if (req.Length > 0 && _config.Data.InstanceRoots.Any(r => string.Equals((r ?? "").Trim(), req, StringComparison.OrdinalIgnoreCase)))
+            return req;
+        return PrimaryRoot();
+    }
+
+    // ── Instance locations (roots) ───────────────────────────────────────────────
+    private object GetInstanceRoots()
+    {
+        var primary = PrimaryRoot();
+        var roots = _config.Data.InstanceRoots
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(r => new
+            {
+                path    = r,
+                primary = string.Equals(r, primary, StringComparison.OrdinalIgnoreCase),
+                exists  = Directory.Exists(Path.Combine(r, "instances")),
+                count   = _config.Data.Instances.Count(e => string.Equals(e.DataDir, r, StringComparison.OrdinalIgnoreCase)),
+            })
+            .ToList();
+        return new { ok = true, roots };
+    }
+
+    private object AddInstanceRoot(string path)
+    {
+        var p = (path ?? "").Trim().TrimEnd('\\', '/');
+        if (p.Length == 0)          return new { ok = false, error = "No folder selected." };
+        if (!Directory.Exists(p))   return new { ok = false, error = "Folder does not exist." };
+        if (_config.Data.InstanceRoots.Any(r => string.Equals((r ?? "").TrimEnd('\\', '/'), p, StringComparison.OrdinalIgnoreCase)))
+            return new { ok = false, error = "That location is already added." };
+
+        _config.Data.InstanceRoots.Add(p);
+
+        int added = 0;
+        var instances = Path.Combine(p, "instances");
+        if (Directory.Exists(instances))
+            foreach (var dir in Directory.EnumerateDirectories(instances))
+            {
+                var cfg = Path.Combine(dir, "instance.cfg");
+                if (!File.Exists(cfg)) continue;
+                var id = Path.GetFileName(dir);
+                if (_config.Data.Instances.Any(e => e.Id == id)) continue;
+                var nm = id;
+                try { foreach (var line in File.ReadAllLines(cfg)) if (line.StartsWith("name=", StringComparison.Ordinal)) { nm = line[5..]; break; } } catch { }
+                var entry = new InstanceEntry { Id = id, DisplayName = nm, DataDir = p };
+                _config.Data.Instances.Add(entry);
+                _manager.AddEntry(entry);
+                added++;
+            }
+        _config.Save();
+        return new { ok = true, added };
+    }
+
+    private object RemoveInstanceRoot(string path)
+    {
+        var p = (path ?? "").Trim().TrimEnd('\\', '/');
+        _config.Data.InstanceRoots.RemoveAll(r => string.Equals((r ?? "").TrimEnd('\\', '/'), p, StringComparison.OrdinalIgnoreCase));
+        var gone = _config.Data.Instances
+            .Where(e => string.Equals((e.DataDir ?? "").TrimEnd('\\', '/'), p, StringComparison.OrdinalIgnoreCase))
+            .Select(e => e.Id).ToList();
+        _config.Data.Instances.RemoveAll(e => gone.Contains(e.Id));
+        var disp = WpfApp.Current?.Dispatcher;
+        foreach (var id in gone)
+        {
+            var running = _manager.Instances.FirstOrDefault(i => i.Entry.Id == id);
+            if (running == null) continue;
+            if (disp != null && !disp.CheckAccess()) disp.Invoke(() => _manager.Instances.Remove(running));
+            else _manager.Instances.Remove(running);
+        }
+        _config.Save();
+        return new { ok = true, removed = gone.Count };
+    }
+
+    /// <summary>Opens a native folder picker (on the UI thread) and returns the chosen path.</summary>
+    private object PickFolder()
+    {
+        string? picked = null;
+        void Show()
+        {
+            using var dlg = new System.Windows.Forms.FolderBrowserDialog
+            {
+                Description = "Select an instances location (a folder that contains an 'instances' subfolder)",
+                UseDescriptionForTitle = true,
+            };
+            if (dlg.ShowDialog() == System.Windows.Forms.DialogResult.OK) picked = dlg.SelectedPath;
+        }
+        var disp = WpfApp.Current?.Dispatcher;
+        if (disp != null && !disp.CheckAccess()) disp.Invoke(Show); else Show();
+        return picked == null ? (object)new { ok = false, cancelled = true } : new { ok = true, path = picked };
+    }
+
+    private object SetPrimaryRoot(string path)
+    {
+        var p = (path ?? "").Trim().TrimEnd('\\', '/');
+        var idx = _config.Data.InstanceRoots.FindIndex(r => string.Equals((r ?? "").TrimEnd('\\', '/'), p, StringComparison.OrdinalIgnoreCase));
+        if (idx < 0) return new { ok = false, error = "Unknown location." };
+        if (idx > 0)
+        {
+            var r = _config.Data.InstanceRoots[idx];
+            _config.Data.InstanceRoots.RemoveAt(idx);
+            _config.Data.InstanceRoots.Insert(0, r);
+            _config.Save();
+        }
+        return new { ok = true };
+    }
+
+    private object OpenPath(string path)
+    {
+        try
+        {
+            if (!Directory.Exists(path)) return new { ok = false, error = "Folder not found." };
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = path, UseShellExecute = true });
+            return new { ok = true };
+        }
+        catch (Exception e) { return new { ok = false, error = e.Message }; }
+    }
+
+    /// <summary>Moves an instance's folder to another location. Same-volume is a fast
+    /// rename; cross-volume falls back to copy+delete. Push: moveProgress / moveDone.</summary>
+    private object MoveInstance(string id, string targetRoot)
+    {
+        var target = ResolveTargetRoot(targetRoot);
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                var src = Path.Combine(InstanceDataDir(id), "instances", id);
+                var dst = Path.Combine(target, "instances", id);
+                if (string.Equals(Path.GetFullPath(src).TrimEnd('\\'), Path.GetFullPath(dst).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+                    { Push("moveDone", new { ok = false, error = "Instance is already in that location." }); return; }
+                if (!Directory.Exists(src)) { Push("moveDone", new { ok = false, error = "Instance folder not found." }); return; }
+                if (Directory.Exists(dst)) { Push("moveDone", new { ok = false, error = "A folder with that id already exists there." }); return; }
+                var running = _manager.Instances.FirstOrDefault(i => i.Entry.Id == id);
+                if (running != null && running.State != InstanceState.Stopped)
+                    { Push("moveDone", new { ok = false, error = "Stop the instance before moving it." }); return; }
+
+                Directory.CreateDirectory(Path.Combine(target, "instances"));
+                Push("moveProgress", new { id, message = "Moving files…" });
+                try { Directory.Move(src, dst); }
+                catch (IOException) { CopyDirectory(src, dst); Directory.Delete(src, recursive: true); }   // cross-volume
+
+                var entry = _config.Data.Instances.FirstOrDefault(e => e.Id == id);
+                if (entry != null) entry.DataDir = target;
+                _config.Save();
+                Logger.Info($"MoveInstance: '{id}' -> {target}");
+                Push("moveDone", new { ok = true, id });
+            }
+            catch (Exception e) { Logger.Warn($"MoveInstance({id}): {e.Message}"); Push("moveDone", new { ok = false, error = e.Message }); }
+        });
+        return new { ok = true };
+    }
 
     private object LaunchInstance(string id, bool vanilla, string joinServer = "")
     {
@@ -1127,7 +1316,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         var projectType = kind == "modpack" ? "modpack" : "mod";
         try
         {
-            var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, _prismDataDir);
+            var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
             var mcFilter = projectType == "modpack" ? "" : (meta?.Mc ?? "");
             var node = await _modrinth.SearchAsync(query, mcFilter, meta?.Loader ?? "", offset, 20, projectType);
             var hits = node?["hits"]?.AsArray();
@@ -1161,7 +1350,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     {
         try
         {
-            var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, _prismDataDir);
+            var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
             var arr  = await _modrinth.GetVersionsAsync(projectId, meta?.Mc ?? "", meta?.Loader ?? "");
             var list = new List<object>();
             if (arr is JsonArray versions)
@@ -1218,7 +1407,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         var classId = kind == "modpack" ? CurseForgeClient.ClassModpacks : 6;
         try
         {
-            var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, _prismDataDir);
+            var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
             var mcFilter = kind == "modpack" ? "" : (meta?.Mc ?? "");
             var node = await _curse.SearchAsync(key, query, mcFilter, meta?.Loader ?? "", offset, 20, classId);
             var data = node?["data"]?.AsArray();
@@ -1254,7 +1443,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         if (string.IsNullOrEmpty(key)) return new { ok = false, error = CurseSetupHint, versions = Array.Empty<object>() };
         try
         {
-            var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, _prismDataDir);
+            var meta = string.IsNullOrEmpty(instanceId) ? null : InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
             var node = await _curse.GetFilesAsync(key, projectId, meta?.Mc ?? "", meta?.Loader ?? "");
             var data = node?["data"]?.AsArray();
             var list = new List<object>();
@@ -1295,7 +1484,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             try
             {
                 if (string.IsNullOrWhiteSpace(url)) throw new Exception("No download URL");
-                var modsDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "mods");
+                var modsDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "mods");
                 var dest    = await _modrinth.DownloadFileAsync(url, filename, sha512, modsDir);
                 Logger.Info($"DownloadMod({instanceId}): {Path.GetFileName(dest)} ← {projectTitle}");
                 Push("modDownloadDone", new { ok = true, filename = Path.GetFileName(dest), projectTitle });
@@ -1319,8 +1508,8 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             try
             {
                 if (string.IsNullOrWhiteSpace(versionId)) throw new Exception("No version selected.");
-                var meta    = InstanceMetaReader.Read(instanceId, _prismDataDir);
-                var modsDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "mods");
+                var meta    = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
+                var modsDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "mods");
                 Directory.CreateDirectory(modsDir);
 
                 var visited  = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // project ids handled
@@ -1402,8 +1591,8 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         {
             try
             {
-                var meta    = InstanceMetaReader.Read(instanceId, _prismDataDir);
-                var modsDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "mods");
+                var meta    = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
+                var modsDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "mods");
                 if (!Directory.Exists(modsDir)) { Push("modUpdatesDone", new { ok = true, updates = Array.Empty<object>(), scanned = 0 }); return; }
 
                 var files     = Directory.GetFiles(modsDir, "*.jar");
@@ -1470,7 +1659,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         {
             try
             {
-                var modsDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "mods");
+                var modsDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "mods");
                 var dest    = await _modrinth.DownloadFileAsync(url, newFilename, sha512, modsDir);
 
                 // Remove the previous jar only if it's a different file (some mods reuse the name).
@@ -1500,7 +1689,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             string? savePath = null;
             WpfApp.Current?.Dispatcher.Invoke(() =>
             {
-                var meta = InstanceMetaReader.Read(instanceId, _prismDataDir);
+                var meta = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
                 var dlg  = new Microsoft.Win32.SaveFileDialog
                 {
                     Title    = "Export Modpack — " + meta.Name,
@@ -1514,8 +1703,8 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
             try
             {
-                var meta       = InstanceMetaReader.Read(instanceId, _prismDataDir);
-                var mcDir      = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft");
+                var meta       = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
+                var mcDir      = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft");
                 Push("exportProgress", new { phase = "start", message = "Building modpack ZIP…" });
 
                 using var zip = System.IO.Compression.ZipFile.Open(savePath, System.IO.Compression.ZipArchiveMode.Create);
@@ -1583,16 +1772,16 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         if (slug.Length < 2) slug = "cryo-instance";
         var id = slug;
         int n = 2;
-        while (Directory.Exists(Path.Combine(_prismDataDir, "instances", id))
+        while (Directory.Exists(Path.Combine(InstanceDataDir(id), "instances", id))
             || _config.Data.Instances.Any(e => e.Id == id))
             id = slug + "-" + n++;
         return id;
     }
 
     /// <summary>Writes instance.cfg + mmc-pack.json and creates the minecraft folder tree.</summary>
-    private string CreateInstanceFolder(string id, string name, string mc, string loader, string loaderVer, int ramMax)
+    private string CreateInstanceFolder(string id, string name, string mc, string loader, string loaderVer, int ramMax, string targetRoot)
     {
-        var instanceDir = Path.Combine(_prismDataDir, "instances", id);
+        var instanceDir = Path.Combine(targetRoot, "instances", id);
         var mcDir       = Path.Combine(instanceDir, "minecraft");
         Directory.CreateDirectory(Path.Combine(mcDir, "mods"));
         Directory.CreateDirectory(Path.Combine(mcDir, "config"));
@@ -1616,7 +1805,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     // ── Modpack source tracking + update ─────────────────────────────────────────
 
-    private string PackJsonPath(string id) => Path.Combine(_prismDataDir, "instances", id, "cryo-pack.json");
+    private string PackJsonPath(string id) => Path.Combine(InstanceDataDir(id), "instances", id, "cryo-pack.json");
 
     /// <summary>Remembers which Modrinth/CurseForge pack (and version) an instance came
     /// from, so it can be updated later.</summary>
@@ -1661,7 +1850,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         var projectId = src["projectId"]?.GetValue<string>() ?? "";
         var curVer    = src["versionId"]?.GetValue<string>() ?? "";
         var name      = src["name"]?.GetValue<string>() ?? "";
-        var meta      = InstanceMetaReader.Read(id, _prismDataDir);
+        var meta      = InstanceMetaReader.Read(id, InstanceDataDir(id));
         try
         {
             string latestId = "", latestName = "";
@@ -1706,8 +1895,8 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 var source    = src["source"]?.GetValue<string>() ?? "";
                 var projectId  = src["projectId"]?.GetValue<string>() ?? "";
                 var name      = src["name"]?.GetValue<string>() ?? "Modpack";
-                var meta      = InstanceMetaReader.Read(id, _prismDataDir);
-                var instanceDir = Path.Combine(_prismDataDir, "instances", id);
+                var meta      = InstanceMetaReader.Read(id, InstanceDataDir(id));
+                var instanceDir = Path.Combine(InstanceDataDir(id), "instances", id);
                 var mcDir   = Path.Combine(instanceDir, "minecraft");
                 var modsDir = Path.Combine(mcDir, "mods");
 
@@ -1841,11 +2030,11 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     }
 
     /// <summary>Registers a Cryo-native instance in config + the live manager.</summary>
-    private void RegisterInstance(string id, string name)
+    private void RegisterInstance(string id, string name, string targetRoot)
     {
         if (_config.Data.Instances.All(e => e.Id != id))
         {
-            var entry = new InstanceEntry { Id = id, DisplayName = name, Source = "cryo" };
+            var entry = new InstanceEntry { Id = id, DisplayName = name, Source = "cryo", DataDir = string.IsNullOrWhiteSpace(targetRoot) ? PrimaryRoot() : targetRoot };
             _config.Data.Instances.Add(entry);
             _config.Save();
             _manager.AddEntry(entry);
@@ -1871,8 +2060,9 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         try
         {
             var id = MakeInstanceId(name);
-            CreateInstanceFolder(id, name, mc, loader, loaderVer, ramMax);
-            RegisterInstance(id, name);
+            var target = ResolveTargetRoot(args.Str("targetRoot"));
+            CreateInstanceFolder(id, name, mc, loader, loaderVer, ramMax, target);
+            RegisterInstance(id, name, target);
 
             // Install the loader via the engine so the instance launches without Prism
             // (NeoForge/Forge/Fabric/Quilt download; Vanilla just records the version).
@@ -1922,9 +2112,9 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         }
     }
 
-    private void FinishModpack(string id, string name, string mc, string loader, string loaderVer, int fileCount, int failed)
+    private void FinishModpack(string id, string name, string mc, string loader, string loaderVer, int fileCount, int failed, string targetRoot)
     {
-        RegisterInstance(id, name);
+        RegisterInstance(id, name, targetRoot);
         // Install whatever loader the pack declares so it launches without Prism.
         if (loader.Equals("Vanilla", StringComparison.OrdinalIgnoreCase))
             StoreEngineVersion(id, mc);
@@ -1939,8 +2129,9 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     /// <summary>Downloads + installs a Modrinth modpack (.mrpack) as a new instance.
     /// Push events: modpackProgress / modpackDone.</summary>
-    private object InstallModrinthModpack(string projectId, string versionId, string name)
+    private object InstallModrinthModpack(string projectId, string versionId, string name, string targetRoot)
     {
+        var target = ResolveTargetRoot(targetRoot);
         _ = Task.Run(async () =>
         {
             string? temp = null;
@@ -1978,7 +2169,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 }
 
                 var id = MakeInstanceId(name);
-                var instanceDir = CreateInstanceFolder(id, name, mc, loader, loaderVer, 6144);
+                var instanceDir = CreateInstanceFolder(id, name, mc, loader, loaderVer, 6144, target);
                 var mcDir = Path.Combine(instanceDir, "minecraft");
                 StorePackSource(id, "modrinth", projectId, versionId, name);
 
@@ -2000,7 +2191,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 Push("modpackProgress", new { phase = "overrides", message = "Applying overrides…" });
                 using (var z = System.IO.Compression.ZipFile.OpenRead(temp)) ExtractOverrides(z, mcDir);
 
-                FinishModpack(id, name, mc, loader, loaderVer, total, failed);
+                FinishModpack(id, name, mc, loader, loaderVer, total, failed, target);
             }
             catch (Exception e)
             {
@@ -2014,8 +2205,9 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     /// <summary>Downloads + installs a CurseForge modpack as a new instance.
     /// Push events: modpackProgress / modpackDone.</summary>
-    private object InstallCurseForgeModpack(string projectId, string fileId, string name)
+    private object InstallCurseForgeModpack(string projectId, string fileId, string name, string targetRoot)
     {
+        var target = ResolveTargetRoot(targetRoot);
         _ = Task.Run(async () =>
         {
             string? temp = null;
@@ -2065,7 +2257,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 }
 
                 var id = MakeInstanceId(name);
-                var instanceDir = CreateInstanceFolder(id, name, mc, loader, loaderVer, 6144);
+                var instanceDir = CreateInstanceFolder(id, name, mc, loader, loaderVer, 6144, target);
                 var mcDir = Path.Combine(instanceDir, "minecraft");
                 var modsDir = Path.Combine(mcDir, "mods");
                 StorePackSource(id, "curseforge", projectId, fileId, name);
@@ -2095,7 +2287,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 Push("modpackProgress", new { phase = "overrides", message = "Applying overrides…" });
                 using (var z = System.IO.Compression.ZipFile.OpenRead(temp)) ExtractOverrides(z, mcDir);
 
-                FinishModpack(id, name, mc, loader, loaderVer, total, failed);
+                FinishModpack(id, name, mc, loader, loaderVer, total, failed, target);
             }
             catch (Exception e)
             {
@@ -2132,13 +2324,13 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         {
             try
             {
-                var src = Path.Combine(_prismDataDir, "instances", id);
+                var src = Path.Combine(InstanceDataDir(id), "instances", id);
                 if (!Directory.Exists(src)) { Push("duplicateDone", new { ok = false, error = "Instance not found." }); return; }
 
-                var meta    = InstanceMetaReader.Read(id, _prismDataDir);
+                var meta    = InstanceMetaReader.Read(id, InstanceDataDir(id));
                 var newName = (string.IsNullOrEmpty(meta.Name) ? id : meta.Name) + " (copy)";
                 var newId   = MakeInstanceId(newName);
-                var dst     = Path.Combine(_prismDataDir, "instances", newId);
+                var dst     = Path.Combine(InstanceDataDir(id), "instances", newId);
 
                 Push("duplicateProgress", new { message = "Copying files…" });
                 // Skip regenerable noise at the instance root AND under minecraft/.
@@ -2156,7 +2348,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                     File.WriteAllLines(cfg, File.ReadAllLines(cfg)
                         .Select(l => l.StartsWith("name=", StringComparison.Ordinal) ? "name=" + newName : l));
 
-                RegisterInstance(newId, newName);
+                RegisterInstance(newId, newName, InstanceDataDir(id));
                 Logger.Info($"DuplicateInstance: '{id}' → '{newId}'");
                 Push("duplicateDone", new { ok = true, id = newId, name = newName });
             }
@@ -2217,7 +2409,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 id = id.Length > 32 ? id[..32] : id;
                 if (id.Length < 4) id = "cryo-import-" + DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-                var instanceDir = Path.Combine(_prismDataDir, "instances", id);
+                var instanceDir = Path.Combine(InstanceDataDir(id), "instances", id);
                 var mcDir       = Path.Combine(instanceDir, "minecraft");
                 if (Directory.Exists(instanceDir))
                     id += "-" + DateTimeOffset.UtcNow.ToString("yyyyMMdd");
@@ -2278,7 +2470,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     // ── Server list ──────────────────────────────────────────────────────────
 
     private string ServersDatPath(string instanceId)
-        => Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "servers.dat");
+        => Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "servers.dat");
 
     private object GetServers(string instanceId)
     {
@@ -2338,7 +2530,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private object GetWorlds(string instanceId)
     {
-        var savesDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "saves");
+        var savesDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "saves");
         if (!Directory.Exists(savesDir)) return new { worlds = Array.Empty<object>() };
         var worlds = Directory.EnumerateDirectories(savesDir)
             .Select(d => new DirectoryInfo(d))
@@ -2364,7 +2556,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         {
             try
             {
-                var worldDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "saves", worldName);
+                var worldDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "saves", worldName);
                 if (!Directory.Exists(worldDir)) throw new DirectoryNotFoundException($"World '{worldName}' not found");
 
                 var backupDir = BackupDir(instanceId);
@@ -2418,7 +2610,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 var dateIdx    = System.Text.RegularExpressions.Regex.Match(worldName, @"_\d{4}-\d{2}-\d{2}_");
                 if (dateIdx.Success) worldName = worldName[..dateIdx.Index];
 
-                var destDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "saves", worldName + "_restore");
+                var destDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "saves", worldName + "_restore");
                 if (Directory.Exists(destDir)) Directory.Delete(destDir, recursive: true);
 
                 Push("backupProgress", new { phase = "start", worldName, message = $"Restoring '{worldName}'…" });
@@ -2445,7 +2637,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private object OpenWorldsFolder(string instanceId)
     {
-        var dir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft", "saves");
+        var dir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "saves");
         if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
         System.Diagnostics.Process.Start("explorer.exe", dir);
         return new { ok = true };
@@ -2565,7 +2757,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             return only.Length > 12000 ? only[..12000] + "\n…(truncated)" : only;
         }
 
-        var dir = Path.Combine(_prismDataDir, "instances", id, "minecraft");
+        var dir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft");
         sb.AppendLine($"\n# Context for instance \"{id}\" (only use facts from here; do not invent file names)");
 
         // AI Memory — inject past solutions so the AI doesn't repeat itself
@@ -2669,7 +2861,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             if (status == "ok") nok++; else if (status == "warn") nwarn++; else nfail++;
         }
 
-        var data = _prismDataDir;
+        var data = _config.Data.InstanceRoots.Count > 0 ? _config.Data.InstanceRoots[0] : _prismDataDir;
 
         // PrismLauncher executable + data dir
         var prism = _config.Data.PrismExe;
@@ -2878,7 +3070,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     /// <summary>Groups enabled jars by declared modId and flags duplicates (same mod, multiple jars).</summary>
     private object ScanMods(string id)
     {
-        var modsDir = Path.Combine(_prismDataDir, "instances", id, "minecraft", "mods");
+        var modsDir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "mods");
         if (!Directory.Exists(modsDir)) return new { ok = false, error = "No mods folder for this instance." };
 
         var byId = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -2909,7 +3101,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     /// </summary>
     private object AnalyzeModGraph(string id)
     {
-        var modsDir = Path.Combine(_prismDataDir, "instances", id, "minecraft", "mods");
+        var modsDir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "mods");
         if (!Directory.Exists(modsDir)) return new { ok = false, error = "No mods folder for this instance." };
 
         // Map enabled + disabled modIds → primary name; collect deps per owner.
@@ -3063,7 +3255,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     /// instance.cfg <c>[General]</c> section, or <c>""</c> if unset.</summary>
     private string ReadInstanceJavaPath(string instanceId)
     {
-        var cfgPath = Path.Combine(_prismDataDir, "instances", instanceId, "instance.cfg");
+        var cfgPath = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "instance.cfg");
         if (!File.Exists(cfgPath)) return "";
         try
         {
@@ -3181,7 +3373,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
         // Required major for this instance's MC version.
         int requiredMajor = 0; string mc = "";
-        try { var meta = InstanceMetaReader.Read(instanceId, _prismDataDir); mc = meta.Mc ?? ""; requiredMajor = JavaMajorForMc(mc); }
+        try { var meta = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId)); mc = meta.Mc ?? ""; requiredMajor = JavaMajorForMc(mc); }
         catch { }
 
         // Recommended: Cryo's bundled JRE for the required major if present, else any
@@ -3246,7 +3438,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     /// <summary>Reads the CmlLib version name previously stored for an instance.</summary>
     private string? GetStoredEngineVersion(string instanceId)
     {
-        var path = Path.Combine(_prismDataDir, "instances", instanceId, "cryo-engine.json");
+        var path = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "cryo-engine.json");
         if (!File.Exists(path)) return null;
         try { return JsonNode.Parse(File.ReadAllText(path))?["versionName"]?.GetValue<string>(); }
         catch { return null; }
@@ -3254,7 +3446,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private void StoreEngineVersion(string instanceId, string versionName)
     {
-        var path = Path.Combine(_prismDataDir, "instances", instanceId, "cryo-engine.json");
+        var path = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "cryo-engine.json");
         File.WriteAllText(path, new JsonObject { ["versionName"] = versionName }.ToJsonString());
     }
 
@@ -3288,7 +3480,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     private object GetEngineStatus(string instanceId)
     {
         var versionName = GetStoredEngineVersion(instanceId);
-        var meta  = InstanceMetaReader.Read(instanceId, _prismDataDir);
+        var meta  = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
         var entry = _manager.FindById(instanceId)?.Entry;
         return new
         {
@@ -3342,7 +3534,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         {
             try
             {
-                var meta = InstanceMetaReader.Read(instanceId, _prismDataDir);
+                var meta = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
                 var mc   = meta.Mc;
                 if (string.IsNullOrEmpty(mc)) mc = "1.21.1";
                 var nfv  = string.IsNullOrWhiteSpace(neoForgeVersion) ? null : neoForgeVersion;
@@ -3395,8 +3587,8 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                     ?? throw new Exception("NeoForge not installed via engine yet. Click 'Install Engine' first.");
 
                 var session = MicrosoftAccount.Instance.Session!;
-                var meta    = InstanceMetaReader.Read(instanceId, _prismDataDir);
-                var gameDir = Path.Combine(_prismDataDir, "instances", instanceId, "minecraft");
+                var meta    = InstanceMetaReader.Read(instanceId, InstanceDataDir(instanceId));
+                var gameDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft");
 
                 if (inst.State is InstanceState.Loading or InstanceState.Ready)
                 {
@@ -3587,7 +3779,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     /// <summary>Reads vspeed-stats.json written by the mod (real data-load timings).</summary>
     private object GetStats(string id)
     {
-        var path = Path.Combine(_prismDataDir, "instances", id, "minecraft", "vspeed-stats.json");
+        var path = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "vspeed-stats.json");
         if (!File.Exists(path))
             return new { available = false };
         try
@@ -3717,7 +3909,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         curseHasKey      = !string.IsNullOrWhiteSpace(_config.Data.CurseForgeApiKey),
         curseEnabled     = !string.IsNullOrWhiteSpace(EffectiveCurseKey()),
         discordEnabled   = _config.Data.DiscordEnabled,
-        discordHasId     = !string.IsNullOrWhiteSpace(_config.Data.DiscordClientId),
+        discordHasId     = !string.IsNullOrWhiteSpace(DiscordRpc.EmbeddedClientId),
         instances        = _config.Data.Instances,
     };
 
@@ -3750,7 +3942,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private object GetInstanceCfg(string id)
     {
-        var cfgPath = Path.Combine(_prismDataDir, "instances", id, "instance.cfg");
+        var cfgPath = Path.Combine(InstanceDataDir(id), "instances", id, "instance.cfg");
         var kv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (File.Exists(cfgPath))
         {
@@ -3779,7 +3971,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private object SaveInstanceCfg(string id, JsonNode args)
     {
-        var cfgPath = Path.Combine(_prismDataDir, "instances", id, "instance.cfg");
+        var cfgPath = Path.Combine(InstanceDataDir(id), "instances", id, "instance.cfg");
         if (!File.Exists(cfgPath))
             return new { ok = false, error = "instance.cfg not found" };
 
@@ -3819,8 +4011,8 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private object OpenFolder(string id)
     {
-        var mc = Path.Combine(_prismDataDir, "instances", id, "minecraft");
-        var dir = Directory.Exists(mc) ? mc : Path.Combine(_prismDataDir, "instances", id);
+        var mc = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft");
+        var dir = Directory.Exists(mc) ? mc : Path.Combine(InstanceDataDir(id), "instances", id);
         if (Directory.Exists(dir))
             System.Diagnostics.Process.Start("explorer.exe", dir);
         else
@@ -3830,7 +4022,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
     private object OpenCrashReport(string id)
     {
-        var crashDir = Path.Combine(_prismDataDir, "instances", id, "minecraft", "crash-reports");
+        var crashDir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "crash-reports");
         if (!Directory.Exists(crashDir))
             return new { ok = false, error = "No crash-reports folder found" };
         var latest = Directory.GetFiles(crashDir, "*.txt")

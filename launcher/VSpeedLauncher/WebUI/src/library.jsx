@@ -190,6 +190,7 @@ function LibraryScreen() {
   const [view, setView] = lS("grid");
   const [deleteTarget, setDeleteTarget] = lS(null);  // instance to confirm delete
   const [showCreate, setShowCreate] = lS(false);
+  const [roots, setRoots] = lS([]);   // instance locations (for the "Move →" menu)
 
   async function load() {
     setState("loading");
@@ -212,6 +213,7 @@ function LibraryScreen() {
   // Live state updates from bridge
   lE(() => {
     if (!hasBridge) return;
+    if (api.getInstanceRoots) api.getInstanceRoots().then(r => setRoots((r && r.roots) || [])).catch(() => {});
     function onStateChanged(e) {
       const ev = e.detail;
       setInstances(prev => prev.map(i =>
@@ -228,13 +230,20 @@ function LibraryScreen() {
       if (d.ok) { load(); window.toast({ tone: "success", icon: "check", title: "Duplicated", body: d.name || "" }); }
       else if (d.error) window.toast({ tone: "danger", icon: "alert", title: "Duplicate failed", body: d.error });
     }
+    function onMove(e) {
+      const d = e.detail || {};
+      if (d.ok) { load(); window.toast({ tone: "success", icon: "check", title: "Instance moved" }); }
+      else if (d.error) window.toast({ tone: "danger", icon: "alert", title: "Move failed", body: d.error });
+    }
     window.addEventListener("cryo:instanceStateChanged", onStateChanged);
     window.addEventListener("cryo:importDone", onImport);
     window.addEventListener("cryo:duplicateDone", onDuplicate);
+    window.addEventListener("cryo:moveDone", onMove);
     return () => {
       window.removeEventListener("cryo:instanceStateChanged", onStateChanged);
       window.removeEventListener("cryo:importDone", onImport);
       window.removeEventListener("cryo:duplicateDone", onDuplicate);
+      window.removeEventListener("cryo:moveDone", onMove);
     };
   }, [hasBridge]);
 
@@ -260,14 +269,22 @@ function LibraryScreen() {
     if (!instances.filter(i => i.id !== inst.id).length) setState("empty");
   }
 
-  const menuFor = lCb(inst => [
-    { icon: "play",       label: t("common.play"),       onClick: () => navigate("instance", { id: inst.id, autoLaunch: true }) },
-    { icon: "edit",       label: t("common.edit"),       onClick: () => navigate("instance", { id: inst.id, tab: "settings" }) },
-    { icon: "folderOpen", label: t("common.openFolder"), onClick: () => hasBridge && api.openFolder && api.openFolder(inst.id) },
-    { icon: "copy",       label: t("common.duplicate"),  onClick: () => { if (api.duplicateInstance) { window.toast({ tone: "neutral", icon: "copy", title: "Duplicating…", body: inst.name }); api.duplicateInstance(inst.id).catch(() => {}); } } },
-    { divider: true },
-    { icon: "trash",      label: t("common.delete"), danger: true, onClick: () => setDeleteTarget(inst) },
-  ], [hasBridge, t]);
+  const menuFor = lCb(inst => {
+    const items = [
+      { icon: "play",       label: t("common.play"),       onClick: () => navigate("instance", { id: inst.id, autoLaunch: true }) },
+      { icon: "edit",       label: t("common.edit"),       onClick: () => navigate("instance", { id: inst.id, tab: "settings" }) },
+      { icon: "folderOpen", label: t("common.openFolder"), onClick: () => hasBridge && api.openFolder && api.openFolder(inst.id) },
+      { icon: "copy",       label: t("common.duplicate"),  onClick: () => { if (api.duplicateInstance) { window.toast({ tone: "neutral", icon: "copy", title: "Duplicating…", body: inst.name }); api.duplicateInstance(inst.id).catch(() => {}); } } },
+    ];
+    if (roots.length > 1)
+      roots.forEach(r => items.push({
+        icon: "folder", label: "Move → " + ((r.path || "").split(/[\\/]/).filter(Boolean).pop() || r.path),
+        onClick: () => { window.toast({ tone: "neutral", icon: "folder", title: "Moving…", body: inst.name }); api.moveInstance && api.moveInstance(inst.id, r.path).catch(() => {}); },
+      }));
+    items.push({ divider: true });
+    items.push({ icon: "trash", label: t("common.delete"), danger: true, onClick: () => setDeleteTarget(inst) });
+    return items;
+  }, [hasBridge, t, roots]);
 
   return React.createElement("div", { style: { padding: "26px 30px", maxWidth: 1320, margin: "0 auto" } },
     // Delete confirmation overlay

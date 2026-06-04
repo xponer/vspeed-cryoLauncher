@@ -101,6 +101,28 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### Unreleased — committed to `main`, not yet in a release (next: v1.0.9)
+- **Discord Rich Presence: zero-setup** — the app embeds a public Rich Presence app ID
+  (`DiscordRpc.EmbeddedClientId`); `UpdateDiscordPresence` always uses it. Settings → Discord is
+  now just an on/off toggle (the Application-ID input + save were removed).
+- **Configurable instance locations (multi-folder)** — the old "PrismLauncher path" setting is
+  gone. Config holds `InstanceRoots` (Prism-style data dirs, each with an `instances/` subfolder);
+  every `InstanceEntry` is tagged with its `DataDir`. Discovery scans all roots; a back-compat
+  migration (`ConfigStore.MigrateInstanceRoots`) seeds the list from the legacy `PrismDataDir`.
+  All ~40 instance-path lookups in `CryoBridge` now go through a new `InstanceDataDir(id)` helper
+  (only the field/assignment/fallback still name `_prismDataDir`).
+  - **Settings → Instances** — add/remove locations (native folder picker), **Set primary**
+    (new installs default there), **Open** in Explorer; shows per-location instance counts.
+  - **Install picker** — installing a modpack with >1 location asks **"Install where?"**;
+    `installModrinth/CurseForgeModpack` + `createInstance` now take a `targetRoot`
+    (`CreateInstanceFolder`/`RegisterInstance`/`FinishModpack` thread it through).
+  - **Move instance** — the library card menu gains **Move → <location>** (same-volume rename;
+    cross-volume copy+delete; refuses while running). Bridge `moveInstance` + `moveProgress`/`moveDone`.
+  - New bridge methods: `getInstanceRoots / addInstanceRoot / removeInstanceRoot / setPrimaryRoot /
+    pickFolder / openPath / moveInstance` (+ store.jsx wrappers, `cfg.instances` i18n).
+- ⚠️ Large change to core instance-path handling — **builds clean + JS passes `node --check`, but
+  is NOT yet GUI-tested**. Verify instances still launch and mods/worlds resolve before releasing.
+
 ### v1.0.8 — released (GitHub) — maximized-window fix
 - **Maximize no longer slides under the taskbar** — a `WindowStyle=None` window maximizes
   over the *whole monitor* by default, so the launcher's bottom edge (status bar / content)
