@@ -174,9 +174,44 @@ function createLaunchSim(instance, demoFactor = 8) {
    JS в†’ C#: window.chrome.webview.postMessage(JSON.stringify({id, method, args}))
    C# в†’ JS: window.chrome.webview.addEventListener('message', ...)
    ============================================================ */
+// In-page startup splash (markup in Cryo Launcher.html). Fades + removes itself once
+// the UI is ready. Same DOM surface as the app, so there's no black gap on reveal.
+window.__cryoHideSplash = window.__cryoHideSplash || function () {
+  var s = document.getElementById("cryo-splash");
+  if (!s || s.__hiding) return;
+  s.__hiding = true;
+  s.classList.add("cryo-hide");
+  setTimeout(function () { if (s.parentNode) s.parentNode.removeChild(s); }, 520);
+};
+// Browser/mock (no bridge): hide after the first painted frame. In the WebView the
+// bridge hides it when the initial data has loaded (see _sendReady). Safety fallback both ways.
+if (!(window.chrome && window.chrome.webview))
+  requestAnimationFrame(function () { requestAnimationFrame(function () { window.__cryoHideSplash(); }); });
+setTimeout(function () { window.__cryoHideSplash(); }, 6000);
+
 function createBridgeApi() {
   const pending = new Map();
   let n = 0;
+
+  // Startup-splash handshake: ask the host to fade its splash only once the bridge has
+  // gone quiet (the initial data has loaded) AND a frame has painted — so the user never
+  // sees the empty dark shell. Hard fallback at 5s so the splash can never hang.
+  let _readySent = false, _readyTimer = null;
+  function _sendReady() {
+    if (_readySent) return;
+    _readySent = true;
+    clearTimeout(_readyTimer);
+    try { window.__cryoHideSplash && window.__cryoHideSplash(); } catch (e) {}
+  }
+  function _maybeReady() {
+    if (_readySent) return;
+    clearTimeout(_readyTimer);
+    _readyTimer = setTimeout(() => {
+      if (pending.size === 0) requestAnimationFrame(() => requestAnimationFrame(_sendReady));
+      else _maybeReady();
+    }, 350);
+  }
+  setTimeout(_sendReady, 5000);
 
   window.chrome.webview.addEventListener("message", e => {
     try {
@@ -187,6 +222,7 @@ function createBridgeApi() {
         pending.delete(msg.id);
         if (p._timer) clearTimeout(p._timer);
         msg.error ? p.reject(new Error(msg.error)) : p.resolve(msg.result);
+        _maybeReady();
       } else if (msg.type) {
         // Push event from C# в†’ dispatch as custom DOM event
         window.dispatchEvent(new CustomEvent("cryo:" + msg.type, { detail: msg.data ?? msg }));
@@ -199,7 +235,7 @@ function createBridgeApi() {
       const id = "r" + (++n);
       pending.set(id, { resolve, reject });
       const timer = setTimeout(() => {
-        if (pending.delete(id)) reject(new Error("Bridge timeout: " + method));
+        if (pending.delete(id)) { reject(new Error("Bridge timeout: " + method)); _maybeReady(); }
       }, timeoutMs);
       pending.get(id)._timer = timer;
       window.chrome.webview.postMessage({ id, method, args: args ?? {} }); // object, not string
@@ -212,6 +248,10 @@ function createBridgeApi() {
     async getKpis(id)                { return call("getKpis", { id }); },
     async getCache(id)               { return call("getCache", { id }); },
     async getMods(id)                { return call("getMods", { id }); },
+    async getHealth(id)              { return call("getHealth", { id }); },
+    async getScreenshots(id)         { return call("getScreenshots", { id }); },
+    async deleteScreenshot(id, file) { return call("deleteScreenshot", { id, file }); },
+    async openScreenshot(id, file)   { return call("openScreenshot", { id, file }); },
     async getHistory()               { return call("getHistory"); },
     async getLogs(id, n = 3000)      { return call("getLogs", { id, n }); },
     async getBootTimeline(id)        { return call("getBootTimeline", { id }, 20000); },

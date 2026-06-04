@@ -20,5 +20,8 @@
 
   <Grid>
     <wv2:WebView2 x:Name="WebView" />
+    <!-- Solid dark cover for the WebView2 init phase (before the page paints its own
+         in-page splash) — prevents white/flicker frames. Collapsed on NavigationCompleted. -->
+    <Border x:Name="InitCover" Background="#080B10" />
   </Grid>
 </Window>

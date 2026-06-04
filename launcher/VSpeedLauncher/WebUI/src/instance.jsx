@@ -8,7 +8,7 @@ const { useApp: useApp } = window.CryoStore;
 function InstanceDetail({ id, initialTab, autoLaunch }) {
   const { api, hasBridge, t, fmt, navigate } = useApp();
   const { OverviewTab } = window.CryoOverview;
-  const { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard } = window.CryoInstanceTabs;
+  const { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard, HealthCard, ScreenshotsTab } = window.CryoInstanceTabs;
 
   const [state, setState] = dS("loading");
   const [data, setData] = dS(null);
@@ -194,6 +194,7 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
     { value: "mods",         label: t("tab.mods"),         icon: "package", badge: instance.mods },
     { value: "worlds",       label: "Worlds",              icon: "globe" },
     { value: "servers",      label: "Servers",             icon: "globe" },
+    { value: "screenshots",  label: "Screenshots",         icon: "image" },
     { value: "settings",     label: t("tab.settings"),     icon: "sliders" },
   ];
 
@@ -255,10 +256,13 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
       React.createElement(Tabs, { tabs, value: tab, onChange: setTab })),
     React.createElement("div", { key: tab, className: "anim-fadein" },
       tab === "overview"    && React.createElement(OverviewTab, { instance, kpis, launch: { status, modelT, progress }, t, fmt }),
-      tab === "performance" && React.createElement(PerformanceTab, { instance, cache, t, fmt, api, hasBridge }),
+      tab === "performance" && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } },
+        React.createElement(HealthCard, { instance, api, hasBridge }),
+        React.createElement(PerformanceTab, { instance, cache, t, fmt, api, hasBridge })),
       tab === "mods"        && React.createElement(ModsTab, { instance, mods, t, fmt, api, hasBridge }),
       tab === "worlds"      && React.createElement(WorldsTab, { instance, api, hasBridge, fmt }),
       tab === "servers"     && React.createElement(ServersTab, { instance, api, hasBridge }),
+      tab === "screenshots" && React.createElement(ScreenshotsTab, { instance, api, hasBridge }),
       tab === "settings"    && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } },
         React.createElement(ProfileApplyCard, { instance, api, hasBridge }),
         React.createElement(ModpackUpdateCard, { instance, api, hasBridge }),

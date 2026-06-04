@@ -91,6 +91,8 @@ public sealed class Config
     public bool   StartWithWindows  { get; set; } = false;
     /// <summary>Hide the launcher window when a game starts launching.</summary>
     public bool   AutoHideOnLaunch  { get; set; } = false;
+    /// <summary>Snapshot the instance's worlds before each launch (opt-in safety net).</summary>
+    public bool   AutoBackupBeforeLaunch { get; set; } = false;
     public bool   AutoCleanCache    { get; set; } = true;
 
     // Notifications (tray balloons)

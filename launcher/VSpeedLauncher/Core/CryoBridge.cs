@@ -270,6 +270,7 @@ public sealed class CryoBridge
             "getKpis"         => GetKpis(args.Str("id")),
             "getCache"        => GetCache(args.Str("id")),
             "getMods"         => GetMods(args.Str("id")),
+            "getHealth"       => GetHealth(args.Str("id")),
             "setModEnabled"   => SetModEnabled(args.Str("id"), args.Str("file"), args.Bool("enabled", true)),
             "openUrl"         => OpenUrl(args.Str("url")),
             "openPrism"       => OpenPrism(),
@@ -298,6 +299,7 @@ public sealed class CryoBridge
             "windowMinimize"  => WindowMinimize(),
             "windowMaximize"  => WindowMaximize(),
             "windowClose"     => WindowClose(),
+            "uiReady"         => new { ok = true },   // React signals first paint → host fades splash
             "windowDragStart" => WindowDragStart(),
             "getConfig"         => GetConfig(),
             "saveConfig"        => SaveConfig(args),
@@ -347,6 +349,9 @@ public sealed class CryoBridge
             "removeServer"        => RemoveServer(args.Str("id"), args.Str("ip")),
             // ── World Backups ──────────────────────────────────────────────────────
             "getWorlds"           => GetWorlds(args.Str("id")),
+            "getScreenshots"      => GetScreenshots(args.Str("id")),
+            "deleteScreenshot"    => DeleteScreenshot(args.Str("id"), args.Str("file")),
+            "openScreenshot"      => OpenScreenshot(args.Str("id"), args.Str("file")),
             "backupWorld"         => BackupWorld(args.Str("id"), args.Str("worldName")),
             "getBackups"          => GetBackups(args.Str("id")),
             "restoreBackup"       => RestoreBackup(args.Str("id"), args.Str("file")),
@@ -521,6 +526,98 @@ public sealed class CryoBridge
     }
 
     // ── Mods ──────────────────────────────────────────────────────────────────
+
+    // ── Instance health check (VSpeed diagnostics) ──────────────────────────────
+    private long SystemRamMb()
+    {
+        try { var st = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() }; if (GlobalMemoryStatusEx(ref st)) return (long)(st.ullTotalPhys / (1024UL * 1024UL)); }
+        catch { }
+        return 0;
+    }
+
+    private static int ReadRamMaxMb(string instanceDir)
+    {
+        try
+        {
+            var cfg = Path.Combine(instanceDir, "instance.cfg");
+            if (File.Exists(cfg))
+                foreach (var line in File.ReadAllLines(cfg))
+                    if (line.StartsWith("MaxMemAlloc=", StringComparison.Ordinal) && int.TryParse(line[12..].Trim(), out var v))
+                        return v;
+        }
+        catch { }
+        return 0;
+    }
+
+    /// <summary>Diagnoses an instance and returns a 0–100 score + per-check status/tips.</summary>
+    private object GetHealth(string id)
+    {
+        var checks = new List<object>();
+        int score = 100;
+        void Add(string title, string status, string detail)
+        {
+            checks.Add(new { title, status, detail });
+            if (status == "warn") score -= 12; else if (status == "fail") score -= 28;
+        }
+
+        var dir    = Path.Combine(InstanceDataDir(id), "instances", id);
+        var mcDir  = Path.Combine(dir, "minecraft");
+        var meta   = ReadMetaSafe(id);
+        var mc     = meta?.Mc ?? "";
+        var loader = meta?.Loader ?? "";
+
+        if (!string.IsNullOrWhiteSpace(mc))
+            Add("Minecraft", "ok", (string.IsNullOrWhiteSpace(loader) ? "Vanilla" : loader) + " " + mc);
+        else
+            Add("Minecraft", "fail", "Version not detected (mmc-pack.json missing?)");
+
+        int reqMajor = JavaMajorForMc(mc);
+        var javaPath = ReadInstanceJavaPath(id);
+        if (!string.IsNullOrWhiteSpace(javaPath) && !File.Exists(javaPath))
+            Add("Java", "warn", "Custom Java path set but the file is missing — pack needs Java " + reqMajor);
+        else if (!string.IsNullOrWhiteSpace(javaPath))
+            Add("Java", "ok", "Custom Java • this pack needs Java " + reqMajor);
+        else
+            Add("Java", "ok", "Java " + reqMajor + " (auto-selected)");
+
+        int mods = 0, disabled = 0;
+        var modsDir = Path.Combine(mcDir, "mods");
+        if (Directory.Exists(modsDir))
+        {
+            mods     = Directory.GetFiles(modsDir, "*.jar").Length;
+            disabled = Directory.GetFiles(modsDir, "*.jar.disabled").Length;
+        }
+        Add("Mods", "ok", mods + " enabled" + (disabled > 0 ? ", " + disabled + " disabled" : ""));
+
+        int  ramMax    = ReadRamMaxMb(dir);
+        long sysMb     = SystemRamMb();
+        int  recommend = Math.Min(16384, 4096 + mods * 8);
+        if (sysMb > 0) recommend = (int)Math.Min(recommend, Math.Max(2048, sysMb - 2048));
+        if (ramMax <= 0)
+            Add("Memory", "warn", "Not set — the default will be used");
+        else if (ramMax < recommend - 1024)
+            Add("Memory", "warn", (ramMax / 1024.0).ToString("0.0") + " GB — low for " + mods + " mods (~" + (recommend / 1024.0).ToString("0.0") + " GB suggested)");
+        else if (sysMb > 0 && ramMax > sysMb - 1024)
+            Add("Memory", "warn", (ramMax / 1024.0).ToString("0.0") + " GB — leaves little for the OS");
+        else
+            Add("Memory", "ok", (ramMax / 1024.0).ToString("0.0") + " GB allocated");
+
+        if (reqMajor >= 19) Add("VSpeed (AppCDS)", "ok", "Faster startup active on Java " + reqMajor);
+        else                Add("VSpeed (AppCDS)", "warn", "Java " + reqMajor + " — AppCDS needs Java 19+ (older MC)");
+
+        try
+        {
+            var root = Path.GetPathRoot(Path.GetFullPath(dir));
+            if (!string.IsNullOrEmpty(root))
+            {
+                var freeGb = new DriveInfo(root).AvailableFreeSpace / 1024.0 / 1024 / 1024;
+                Add("Disk space", freeGb < 2 ? "fail" : freeGb < 5 ? "warn" : "ok", freeGb.ToString("0.0") + " GB free");
+            }
+        }
+        catch { }
+
+        return new { ok = true, score = Math.Max(0, score), mods, disabled, checks };
+    }
 
     private object GetMods(string id)
     {
@@ -917,6 +1014,8 @@ public sealed class CryoBridge
     {
         var inst = _manager.FindById(id)
             ?? throw new InvalidOperationException($"Instance not found: {id}");
+
+        if (_config.Data.AutoBackupBeforeLaunch) AutoBackupWorlds(id);
 
         // Cryo-native instances skip Prism and go straight to CmlLib.
         if (inst.Entry.Source == "cryo" && MicrosoftAccount.Instance.LoggedIn
@@ -2528,6 +2627,94 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                      "VSpeedLauncher", "backups", instanceId);
 
+    /// <summary>Snapshots the whole saves/ folder before launch (opt-in), keeping the
+    /// 5 most recent auto-backups. Runs inline so the snapshot exists before the game starts.</summary>
+    private void AutoBackupWorlds(string id)
+    {
+        try
+        {
+            var saves = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "saves");
+            if (!Directory.Exists(saves) || !Directory.EnumerateDirectories(saves).Any()) return;
+            var backupDir = BackupDir(id);
+            Directory.CreateDirectory(backupDir);
+            var zip = Path.Combine(backupDir, "auto-" + DateTimeOffset.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".zip");
+            System.IO.Compression.ZipFile.CreateFromDirectory(saves, zip);
+            Logger.Info($"AutoBackup({id}): {zip}");
+            foreach (var f in Directory.GetFiles(backupDir, "auto-*.zip").OrderByDescending(f => f).Skip(5))
+                try { File.Delete(f); } catch { }
+        }
+        catch (Exception e) { Logger.Warn($"AutoBackup({id}): {e.Message}"); }
+    }
+
+    // ── Screenshots ──────────────────────────────────────────────────────────────
+    private object GetScreenshots(string id)
+    {
+        var dir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "screenshots");
+        if (!Directory.Exists(dir)) return new { ok = true, shots = Array.Empty<object>() };
+        var shots = new List<object>();
+        foreach (var f in Directory.GetFiles(dir, "*.png")
+                     .Select(p => new FileInfo(p))
+                     .OrderByDescending(p => p.LastWriteTimeUtc)
+                     .Take(120))
+        {
+            string thumb = "";
+            try { thumb = MakeThumbDataUri(f.FullName, 420); }
+            catch (Exception e) { Logger.Warn($"Screenshot thumb {f.Name}: {e.Message}"); }
+            shots.Add(new
+            {
+                file   = f.Name,
+                thumb,
+                sizeKb = (int)(f.Length / 1024),
+                when   = f.LastWriteTime.ToString("yyyy-MM-dd HH:mm"),
+            });
+        }
+        return new { ok = true, shots };
+    }
+
+    /// <summary>Decodes a PNG, downscales it, and returns a JPEG <c>data:</c> URI thumbnail.
+    /// Reliable in WebView2 (no virtual-host / cross-origin pitfalls that hid the images).</summary>
+    private static string MakeThumbDataUri(string path, int maxW)
+    {
+        using var src = System.Drawing.Image.FromFile(path);
+        double scale = src.Width > maxW ? (double)maxW / src.Width : 1.0;
+        int tw = Math.Max(1, (int)(src.Width * scale)), th = Math.Max(1, (int)(src.Height * scale));
+        using var bmp = new System.Drawing.Bitmap(tw, th);
+        using (var g = System.Drawing.Graphics.FromImage(bmp))
+        {
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.DrawImage(src, 0, 0, tw, th);
+        }
+        using var ms = new MemoryStream();
+        var enc = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders()
+            .First(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
+        using var ep = new System.Drawing.Imaging.EncoderParameters(1);
+        ep.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 72L);
+        bmp.Save(ms, enc, ep);
+        return "data:image/jpeg;base64," + Convert.ToBase64String(ms.ToArray());
+    }
+
+    private object DeleteScreenshot(string id, string file)
+    {
+        try
+        {
+            var path = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "screenshots", Path.GetFileName(file));
+            if (File.Exists(path)) File.Delete(path);
+            return new { ok = true };
+        }
+        catch (Exception e) { return new { ok = false, error = e.Message }; }
+    }
+
+    private object OpenScreenshot(string id, string file)
+    {
+        try
+        {
+            var path = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft", "screenshots", Path.GetFileName(file));
+            if (File.Exists(path)) System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = path, UseShellExecute = true });
+            return new { ok = true };
+        }
+        catch (Exception e) { return new { ok = false, error = e.Message }; }
+    }
+
     private object GetWorlds(string instanceId)
     {
         var savesDir = Path.Combine(InstanceDataDir(instanceId), "instances", instanceId, "minecraft", "saves");
@@ -3894,6 +4081,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         showOnLaunch     = _config.Data.ShowOnLaunch,
         autoHibernate    = _config.Data.AutoHibernate,
         autoHideOnLaunch = _config.Data.AutoHideOnLaunch,
+        autoBackupBeforeLaunch = _config.Data.AutoBackupBeforeLaunch,
         startWithWindows = _config.Data.StartWithWindows,
         autoCleanCache   = _config.Data.AutoCleanCache,
         notifyLaunchDone = _config.Data.NotifyLaunchDone,
@@ -3919,6 +4107,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         if (args["autoHibernate"]    is JsonNode ah)  _config.Data.AutoHibernate    = ah.GetValue<bool>();
         if (args["showOnLaunch"]     is JsonNode sl)  _config.Data.ShowOnLaunch     = sl.GetValue<bool>();
         if (args["autoHideOnLaunch"] is JsonNode hl)  _config.Data.AutoHideOnLaunch = hl.GetValue<bool>();
+        if (args["autoBackupBeforeLaunch"] is JsonNode abl) _config.Data.AutoBackupBeforeLaunch = abl.GetValue<bool>();
         if (args["autoCleanCache"]   is JsonNode ac)  _config.Data.AutoCleanCache   = ac.GetValue<bool>();
         if (args["notifyLaunchDone"] is JsonNode n1)  _config.Data.NotifyLaunchDone = n1.GetValue<bool>();
         if (args["notifyCacheBuilt"] is JsonNode n2)  _config.Data.NotifyCacheBuilt = n2.GetValue<bool>();

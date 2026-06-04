@@ -123,6 +123,8 @@ function JavaSection({ settings, update, t, api, hasBridge }) {
       React.createElement("p", { style: { margin: "0 0 4px", fontSize: 12, color: "var(--text-faint)" } }, t("cfg.launcherOptions")),
       React.createElement(Row, { label: t("cfg.autoHideOnLaunch"), desc: t("cfg.autoHideOnLaunchDesc") },
         React.createElement(Toggle, { checked: cfg.autoHideOnLaunch, onChange: v => saveCfg({ autoHideOnLaunch: v }) })),
+      React.createElement(Row, { label: "Auto-backup worlds before launch", desc: "Snapshot each instance's worlds before every launch (keeps the last 5). Adds a short delay." },
+        React.createElement(Toggle, { checked: !!cfg.autoBackupBeforeLaunch, onChange: v => saveCfg({ autoBackupBeforeLaunch: v }) })),
       React.createElement(Row, { label: t("cfg.showOnLaunch") },
         React.createElement(Toggle, { checked: cfg.showOnLaunch, onChange: v => saveCfg({ showOnLaunch: v }) })),
     ),

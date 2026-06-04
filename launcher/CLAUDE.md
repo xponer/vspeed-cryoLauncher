@@ -101,7 +101,22 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
-### Unreleased — committed to `main`, not yet in a release (next: v1.0.9)
+### v1.0.9 — released (GitHub) — startup splash, health check, screenshots, auto-backup
+- **Startup splash (no white/black flash)** — an in-page HTML/CSS splash (snowflake + a
+  GPU-composited spinner) paints instantly and fades only once the initial data has loaded
+  (`store.jsx` `__cryoHideSplash`, fired when the bridge goes idle). A dark WPF `InitCover`
+  covers the WebView2 init phase, and `WebView.DefaultBackgroundColor` is dark. This replaced
+  earlier janky/flickery attempts (SVG rotation on the Babel-busy main thread; the WPF↔WebView
+  compositing gap when a WPF splash faded before the app composited).
+- **Instance Health check** — per-instance VSpeed diagnostics (Java↔MC version, RAM↔mod count,
+  AppCDS status, disk space, mods) → a 0–100 score + per-check tips. `CryoBridge.GetHealth`;
+  `HealthCard` shown at the top of the Performance tab.
+- **Screenshots gallery** — a new instance tab browsing `minecraft/screenshots`, served via a
+  `cryo-shots.local` virtual-host mapping; click to open, button to delete.
+  `GetScreenshots` / `OpenScreenshot` / `DeleteScreenshot`.
+- **Auto-backup before launch (opt-in)** — a Settings toggle; `LaunchInstance` zips the worlds
+  (`AutoBackupWorlds`, keeps the last 5) before launching. `config.AutoBackupBeforeLaunch`.
+- (A batch **Update all** for mods already existed in the Mods tab.)
 - **Discord Rich Presence: zero-setup** — the app embeds a public Rich Presence app ID
   (`DiscordRpc.EmbeddedClientId`); `UpdateDiscordPresence` always uses it. Settings → Discord is
   now just an on/off toggle (the Application-ID input + save were removed).

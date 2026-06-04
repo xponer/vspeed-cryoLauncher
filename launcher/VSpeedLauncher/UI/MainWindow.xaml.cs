@@ -42,6 +42,9 @@ public partial class MainWindow : Window
             });
 
         await WebView.EnsureCoreWebView2Async(env);
+        // The WebView paints white before content loads — make that initial paint dark
+        // (matches the UI), so there's no white flash if the splash fades a touch early.
+        try { WebView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(255, 0x08, 0x0B, 0x10); } catch { }
 
         var uiFolder = Path.Combine(AppContext.BaseDirectory, "WebUI");
         // Dev convenience: if the source WebUI exists (4 levels up from bin/.../win-x64),
@@ -90,6 +93,10 @@ public partial class MainWindow : Window
             WebView);
 
         WebView.CoreWebView2.WebMessageReceived += _bridge.OnWebMessageReceived;
+        // Drop the dark init-cover once the page (and its in-page splash) has painted,
+        // so the user never sees the WebView's flickery first frames.
+        WebView.CoreWebView2.NavigationCompleted += (_, _) =>
+            Dispatcher.Invoke(() => { if (InitCover != null) InitCover.Visibility = Visibility.Collapsed; });
         WebView.CoreWebView2.Navigate("https://cryo.local/Cryo Launcher.html");
     }
 

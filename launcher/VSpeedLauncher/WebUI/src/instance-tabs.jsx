@@ -1476,4 +1476,67 @@ function ModpackUpdateCard({ instance, api, hasBridge }) {
   );
 }
 
-window.CryoInstanceTabs = { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard };
+// ── Health check card (VSpeed diagnostics) ──────────────────────────────────
+function HealthCard({ instance, api, hasBridge }) {
+  const [h, setH] = tS(null);
+  const [loading, setLoading] = tS(false);
+  function run() {
+    if (!hasBridge || !api.getHealth) return;
+    setLoading(true);
+    api.getHealth(instance.id).then(r => setH(r || null)).catch(() => {}).finally(() => setLoading(false));
+  }
+  tE(() => { run(); }, [instance.id]);
+
+  const score = h ? h.score : 0;
+  const ring  = score >= 80 ? "#36D399" : score >= 50 ? "#F1C40F" : "#E55A5A";
+  const ic = s => s === "ok" ? { n: "check", c: "#36D399" } : s === "fail" ? { n: "alert", c: "#E55A5A" } : { n: "alert", c: "#F1C40F" };
+
+  return React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" } },
+      React.createElement(Icon, { name: "activity", size: 17, style: { color: "var(--acc-2)" } }),
+      React.createElement("h3", { style: { margin: 0, fontSize: 15, fontWeight: 680 } }, "Health check"),
+      React.createElement(Btn, { variant: "outline", size: "sm", icon: "refresh", iconSpin: loading, disabled: loading, onClick: run, style: { marginLeft: "auto" } }, loading ? "Checking…" : "Recheck")),
+    !hasBridge && React.createElement("div", { style: { marginTop: 10, fontSize: 12.5, color: "var(--text-dim)" } }, "Available in the desktop launcher."),
+    h && React.createElement("div", { style: { display: "flex", gap: 18, alignItems: "center", marginTop: 14, flexWrap: "wrap" } },
+      React.createElement("div", { style: { width: 78, height: 78, borderRadius: "50%", flexShrink: 0, display: "grid", placeItems: "center", background: "conic-gradient(" + ring + " " + (score * 3.6) + "deg, var(--panel-2) 0deg)" } },
+        React.createElement("div", { style: { width: 62, height: 62, borderRadius: "50%", background: "var(--panel)", display: "grid", placeItems: "center" } },
+          React.createElement("span", { style: { fontSize: 22, fontWeight: 760, color: ring } }, score))),
+      React.createElement("div", { style: { flex: 1, minWidth: 240, display: "flex", flexDirection: "column", gap: 7 } },
+        (h.checks || []).map((c, i) => React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", gap: 9 } },
+          React.createElement(Icon, { name: ic(c.status).n, size: 14, style: { color: ic(c.status).c, flexShrink: 0 } }),
+          React.createElement("span", { style: { fontSize: 12.5, fontWeight: 600, minWidth: 120 } }, c.title),
+          React.createElement("span", { style: { fontSize: 12, color: "var(--text-dim)" } }, c.detail))))));
+}
+
+// ── Screenshots gallery ──────────────────────────────────────────────────────
+function ScreenshotsTab({ instance, api, hasBridge }) {
+  const [shots, setShots] = tS(null);
+  function load() {
+    if (hasBridge && api.getScreenshots) api.getScreenshots(instance.id).then(r => setShots((r && r.shots) || [])).catch(() => setShots([]));
+    else setShots([]);
+  }
+  tE(() => { load(); }, [instance.id]);
+
+  function del(s) {
+    if (!window.confirm("Delete this screenshot?\n" + s.file)) return;
+    api.deleteScreenshot(instance.id, s.file).then(() => { setShots(list => (list || []).filter(x => x.file !== s.file)); window.toast({ tone: "neutral", icon: "trash", title: "Deleted" }); }).catch(() => {});
+  }
+
+  if (shots === null) return React.createElement("div", { style: { padding: 30, color: "var(--text-dim)", fontSize: 13 } }, "Loading…");
+  if (!shots.length) return React.createElement(EmptyState, { icon: "image", title: "No screenshots yet", body: "Screenshots you take in-game (F2) will show up here." });
+  return React.createElement("div", null,
+    React.createElement("div", { style: { fontSize: 12.5, color: "var(--text-dim)", marginBottom: 12 } }, shots.length + " screenshot" + (shots.length === 1 ? "" : "s") + " · click to open"),
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 } },
+      shots.map(s => React.createElement("div", { key: s.file, className: "glass", style: { borderRadius: "var(--r-lg)", overflow: "hidden", border: "1px solid var(--border)" } },
+        React.createElement("img", { src: s.thumb, loading: "lazy", onClick: () => api.openScreenshot(instance.id, s.file),
+          style: { width: "100%", height: 132, objectFit: "cover", display: "block", cursor: "pointer", background: "var(--panel-2)" } }),
+        React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 10px" } },
+          React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+            React.createElement("div", { style: { fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, s.file),
+            React.createElement("div", { style: { fontSize: 10.5, color: "var(--text-faint)" } }, s.when + " · " + s.sizeKb + " KB")),
+          React.createElement("button", { className: "no-drag", title: "Delete", onClick: () => del(s),
+            style: { border: "none", background: "transparent", color: "var(--text-dim)", cursor: "pointer", padding: 4, display: "grid", placeItems: "center" } },
+            React.createElement(Icon, { name: "trash", size: 14 })))))));
+}
+
+window.CryoInstanceTabs = { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard, HealthCard, ScreenshotsTab };
