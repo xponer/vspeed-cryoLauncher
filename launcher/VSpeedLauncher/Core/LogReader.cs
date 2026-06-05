@@ -114,6 +114,7 @@ public static class LogReader
                 Src    = shortSrc,
                 Thread = m.Groups["thread"].Value,
                 Msg    = m.Groups["msg"].Value,
+                Raw    = raw,
             };
         }
 
@@ -131,6 +132,7 @@ public static class LogReader
             Src    = "Minecraft",
             Thread = m2.Success ? m2.Groups["thread"].Value : "main",
             Msg    = m2.Success ? m2.Groups["msg"].Value : raw,
+            Raw    = raw,
         };
     }
 
@@ -187,6 +189,8 @@ public sealed class LogEntry
     public string   Src    { get; set; } = "";
     public string   Thread { get; set; } = "";
     public string   Msg    { get; set; } = "";
+    /// <summary>The original log line verbatim (for the console-style view).</summary>
+    public string   Raw    { get; set; } = "";
     /// <summary>Stack-trace / continuation lines that follow this entry, or null.</summary>
     public string[]? Stack { get; set; }
 }

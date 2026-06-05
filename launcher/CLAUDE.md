@@ -111,6 +111,28 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### v1.0.12 — released (GitHub) — live colour-coded log console
+- **Live log tail** — the Logs screen now polls `getLogs` every ~1.2s (while viewing & not
+  paused), so you can watch the game boot in real time. A "LIVE" indicator; autoscroll follows
+  the tail and pauses when you scroll up to read (resumes at the bottom). `onScroll` manages it.
+- **Auto-selects the launching instance** — on the `loading`/`waking` state transition the Logs
+  view switches to that instance; opening Logs after launching from anywhere (incl. tray) defaults
+  to it (`window.__cryoLastLaunched`, set by a global listener in `app.js` + the LogsScreen).
+- **Console-style view** — renders the original log line verbatim (new `LogReader`/`LogEntry`
+  `Raw` field), monospace, **wrapping fully** (no more truncation/ellipsis — that was the "broken"
+  look), capped to the last 1200 lines for snappiness.
+- **Fully colour-coded debug console** — per-segment colouring: time (dim), level (level colour),
+  **thread** and **mod source** each auto-hued to a stable unique colour (`hueFor`), message tinted
+  by level. Filters: 6 levels (TRACE…FATAL) with **live counts**, **"Errors only"** quick toggle,
+  **thread** + **source** dropdown filters, **click a thread/source in any line to filter to it**,
+  regex/text search, next-error jump (ERROR+FATAL). 
+- **Fix: false "crash"** — (1) the engine exit handler marked Crashed on *any* JVM exit while in
+  `Loading` (the standalone state never leaves Loading — no READY pipe), so a normal close read as a
+  crash. Now only a non-zero exit *during startup* (<60s) is a crash; clean exit / long session /
+  user-stop → Stopped. (2) The Logs crash banner triggered on *any* stack trace (modded startup is
+  full of benign ones) — now only on real markers (Crash Report header, JVM fatal, `Exception in
+  thread "main"`, server-start failure).
+
 ### v1.0.11 — released (GitHub) — mod workflow, filters & polish
 - **In-instance "Add mods" tab** — search Modrinth + CurseForge from inside an instance,
   auto-filtered to its loader + MC, one-click install (with deps) straight in — no "which

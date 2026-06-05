@@ -4119,19 +4119,29 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
                 inst.PrismProcess = proc;
                 inst.Notify();
+                var launchedAt = DateTime.UtcNow;
                 Logger.Info($"Engine launch: '{instanceId}' pid={proc.Id} version={versionName}");
                 Push("engineProgress", new { phase = "launched", pid = proc.Id });
 
-                // Watch exit
+                // Watch exit. There's no READY pipe in standalone, so the instance stays
+                // in "Loading" for its whole run — we must NOT treat every exit as a crash.
+                // Only a non-zero exit *during startup* is a real crash; a clean exit (code 0),
+                // a long-running session that's then closed, or a user-requested stop are normal.
                 _ = Task.Run(async () =>
                 {
                     await proc.WaitForExitAsync();
-                    if (inst.State == InstanceState.Loading)
+                    if (inst.State == InstanceState.Stopped) return;   // user pressed Stop (Kill set this)
+                    var ranFor = DateTime.UtcNow - launchedAt;
+                    if (proc.ExitCode != 0 && ranFor < TimeSpan.FromSeconds(60))
                     {
-                        inst.LastError = $"Game exited (code {proc.ExitCode}) before reaching the main menu.";
+                        inst.LastError = $"Game exited (code {proc.ExitCode}) during startup.";
                         inst.State     = InstanceState.Crashed;
-                        WpfApp.Current?.Dispatcher.Invoke(inst.Notify);
                     }
+                    else
+                    {
+                        inst.State = InstanceState.Stopped;   // normal close / ran fine then exited
+                    }
+                    WpfApp.Current?.Dispatcher.Invoke(inst.Notify);
                 });
             }
             catch (Exception e)

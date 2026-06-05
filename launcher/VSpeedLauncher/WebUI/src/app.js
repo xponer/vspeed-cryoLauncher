@@ -365,6 +365,17 @@ function Shell() {
     return () => { cancelled = true; clearTimeout(id); };
   }, [hasBridge]);
 
+  // Remember the instance that last started launching, so the Logs screen can default
+  // to it (works even when launched from the tray or a different screen).
+  aE(() => {
+    function onState(e) {
+      const ev = e.detail || {};
+      if (ev.state === "loading" || ev.state === "waking") window.__cryoLastLaunched = ev.id;
+    }
+    window.addEventListener("cryo:instanceStateChanged", onState);
+    return () => window.removeEventListener("cryo:instanceStateChanged", onState);
+  }, []);
+
   // keyboard shortcuts
   aE(() => {
     function handle(e) {
