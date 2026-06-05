@@ -117,7 +117,7 @@ function CreateInstanceDialog({ api, hasBridge, onClose, onCreated }) {
   );
 }
 
-function InstanceCard({ instance, kpi, onOpen, onPlay, t, fmt, menu }) {
+function InstanceCard({ instance, kpi, onOpen, onPlay, t, fmt, menu, tagColors }) {
   const stateTone = instance.state === "ready" ? "success" : instance.state === "hibernated" ? "accent" : instance.state === "loading" ? "warn" : "neutral";
   return React.createElement("div", {
     className: "glass sheen lift anim-fadeup", onClick: onOpen,
@@ -143,7 +143,12 @@ function InstanceCard({ instance, kpi, onOpen, onPlay, t, fmt, menu }) {
       instance.state && instance.state !== "stopped" &&
         React.createElement(Badge, { tone: stateTone, size: "sm", dot: instance.state === "ready" || instance.state === "hibernated" },
           { stopped: "", loading: "Loading", ready: "Running", hibernated: "Hibernated", waking: "Waking", crashed: "Crashed" }[instance.state] || instance.state),
+      (instance.tags || []).map(tg => React.createElement("span", { key: "tg-" + tg,
+        style: { ...modTagChip(tg, true, tagColors && tagColors[tg]), padding: "3px 8px", display: "inline-flex", alignItems: "center" } }, tg)),
     ),
+    instance.note && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 5, fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.4 } },
+      React.createElement(Icon, { name: "stickyNote", size: 12, style: { flexShrink: 0 } }),
+      React.createElement("span", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, instance.note)),
     React.createElement("div", { className: "hr" }),
     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
       React.createElement("div", { style: { flex: 1, minWidth: 0 } },
@@ -157,7 +162,7 @@ function InstanceCard({ instance, kpi, onOpen, onPlay, t, fmt, menu }) {
   );
 }
 
-function InstanceRow({ instance, kpi, onOpen, onPlay, t, fmt, menu }) {
+function InstanceRow({ instance, kpi, onOpen, onPlay, t, fmt, menu, tagColors }) {
   return React.createElement("div", {
     className: "glass sheen anim-fadeup", onClick: onOpen,
     style: { borderRadius: "var(--r-lg)", padding: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 14 },
@@ -167,6 +172,9 @@ function InstanceRow({ instance, kpi, onOpen, onPlay, t, fmt, menu }) {
       React.createElement("div", { style: { fontSize: 14.5, fontWeight: 680, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, instance.name),
       React.createElement("div", { style: { fontSize: 11.5, color: "var(--text-faint)", marginTop: 2 } },
         (instance.loader || "?") + (instance.mc ? " " + instance.mc : "") + "  •  " + t("lib.modsCount", { n: instance.mods }) + "  •  " + fmt.ram(instance.ramMax)),
+      (instance.tags && instance.tags.length > 0) && React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 5, marginTop: 4 } },
+        instance.tags.slice(0, 6).map(tg => React.createElement("span", { key: "tg-" + tg,
+          style: { ...modTagChip(tg, false, tagColors && tagColors[tg]), padding: "1px 7px" } }, tg))),
     ),
     cacheBadge(instance.cacheState, t),
     kpi && kpi.avg > 0 && React.createElement("span", { className: "tnum", style: { fontSize: 12.5, color: "var(--text-dim)", fontWeight: 600, minWidth: 70, textAlign: "right" } },
@@ -177,6 +185,63 @@ function InstanceRow({ instance, kpi, onOpen, onPlay, t, fmt, menu }) {
       trigger: React.createElement("button", { className: "no-drag", style: { width: 30, height: 30, borderRadius: 8, border: "1px solid var(--border)", background: "var(--panel-2)", color: "var(--text-dim)", display: "grid", placeItems: "center" } },
         React.createElement(Icon, { name: "dots", size: 16 })),
     }),
+  );
+}
+
+/* Tags & note editor for a whole instance (pack) */
+function InstanceTagsDialog({ instance, tagColors, onColor, onClose, onSave, allTags }) {
+  const [tags, setTags] = lS(instance.tags || []);
+  const [note, setNote] = lS(instance.note || "");
+  const [val, setVal]   = lS("");
+  function mergeTags(base, raw) {
+    const next = base.slice();
+    String(raw).split(/[,\n]+/).map(s => s.trim()).filter(Boolean).forEach(p => {
+      if (!next.some(x => x.toLowerCase() === p.toLowerCase())) next.push(p);
+    });
+    return next.slice(0, 12);
+  }
+  function add(raw) { if (String(raw).trim()) { setTags(mergeTags(tags, raw)); setVal(""); } }
+  const remove = tg => setTags(tags.filter(x => x !== tg));
+  // Reuse tags already created on other packs — pick from the pool, no retyping.
+  const suggestions = (allTags || []).map(a => a.tag)
+    .filter(tg => !tags.some(x => x.toLowerCase() === tg.toLowerCase())).slice(0, 14);
+  const swatch = tg => React.createElement("label", { className: "no-drag", title: "Pick tag colour",
+      style: { width: 14, height: 14, borderRadius: 4, background: tagEffectiveHex(tg, tagColors), border: "1px solid rgba(255,255,255,.3)", cursor: "pointer", flexShrink: 0, position: "relative", overflow: "hidden", display: "inline-block" } },
+    React.createElement("input", { type: "color", value: tagEffectiveHex(tg, tagColors), onChange: e => onColor && onColor(tg, e.target.value),
+      style: { position: "absolute", inset: 0, opacity: 0, cursor: "pointer", border: "none", padding: 0, width: "100%", height: "100%" } }));
+  return React.createElement("div", {
+    onMouseDown: e => { if (e.target === e.currentTarget) onClose(); },
+    style: { position: "fixed", inset: 0, zIndex: 700, display: "grid", placeItems: "center", background: "rgba(0,0,0,.55)", backdropFilter: "blur(8px)" },
+  },
+    React.createElement("div", { className: "glass-pop anim-fadein", style: { width: 470, borderRadius: "var(--r-xl)", padding: 26 }, onClick: e => e.stopPropagation() },
+      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 11, marginBottom: 16 } },
+        React.createElement("div", { style: { width: 42, height: 42, borderRadius: 12, background: "var(--acc-soft)", display: "grid", placeItems: "center", color: "var(--acc-text)", flexShrink: 0 } }, React.createElement(Icon, { name: "tag", size: 21 })),
+        React.createElement("div", { style: { minWidth: 0 } },
+          React.createElement("h3", { style: { margin: 0, fontSize: 17, fontWeight: 720 } }, "Tags & note"),
+          React.createElement("div", { style: { fontSize: 12, color: "var(--text-faint)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, instance.name))),
+      React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginBottom: 10 } },
+        tags.length === 0 && React.createElement("span", { style: { fontSize: 12, color: "var(--text-faint)" } }, "No tags yet — label this pack to group & filter it."),
+        tags.map(tg => React.createElement("span", { key: tg, style: { ...modTagChip(tg, true, tagColors && tagColors[tg]), display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 8px" } },
+          swatch(tg),
+          tg,
+          React.createElement("button", { onClick: () => remove(tg), className: "no-drag", style: { display: "grid", placeItems: "center", border: "none", background: "transparent", color: "inherit", padding: 0, opacity: 0.85, cursor: "pointer" } },
+            React.createElement(Icon, { name: "x", size: 12 }))))),
+      React.createElement(TextInput, { value: val, onChange: setVal, placeholder: "Add tag, press Enter (e.g. favorite, smp, testing)", icon: "tag", size: "sm",
+        onKeyDown: e => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); add(val); } },
+        onBlur: () => add(val) }),
+      suggestions.length > 0 && React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 10 } },
+        React.createElement("span", { style: { fontSize: 11, color: "var(--text-faint)" } }, "Quick add:"),
+        suggestions.map(tg => React.createElement("button", { key: tg, className: "no-drag", onClick: () => add(tg),
+          style: { ...modTagChip(tg, false, tagColors && tagColors[tg]), padding: "2px 8px", cursor: "pointer" } }, "+ " + tg))),
+      React.createElement("textarea", {
+        value: note, onChange: e => setNote(e.target.value),
+        placeholder: "Note — what this pack is for, server address, reminders…", rows: 3,
+        style: { width: "100%", resize: "vertical", marginTop: 12, background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "9px 11px", fontSize: 13, fontFamily: "inherit", lineHeight: 1.5, boxSizing: "border-box" },
+      }),
+      React.createElement("div", { style: { display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 } },
+        React.createElement(Btn, { variant: "ghost", onClick: onClose }, "Cancel"),
+        React.createElement(Btn, { variant: "primary", icon: "check", onClick: () => { onSave(val.trim() ? mergeTags(tags, val) : tags, note); onClose(); } }, "Save")),
+    ),
   );
 }
 
@@ -191,6 +256,9 @@ function LibraryScreen() {
   const [deleteTarget, setDeleteTarget] = lS(null);  // instance to confirm delete
   const [showCreate, setShowCreate] = lS(false);
   const [roots, setRoots] = lS([]);   // instance locations (for the "Move →" menu)
+  const [tagColors, setTagColors] = lS({});       // instance tag name → hex (library-wide)
+  const [tagSel, setTagSel] = lS([]);             // active tag filters (AND)
+  const [tagsTarget, setTagsTarget] = lS(null);   // instance whose tag/note dialog is open
 
   async function load() {
     setState("loading");
@@ -214,6 +282,7 @@ function LibraryScreen() {
   lE(() => {
     if (!hasBridge) return;
     if (api.getInstanceRoots) api.getInstanceRoots().then(r => setRoots((r && r.roots) || [])).catch(() => {});
+    if (api.getInstanceTagColors) api.getInstanceTagColors().then(c => setTagColors(c || {})).catch(() => {});
     function onStateChanged(e) {
       const ev = e.detail;
       setInstances(prev => prev.map(i =>
@@ -248,7 +317,12 @@ function LibraryScreen() {
   }, [hasBridge]);
 
   const filtered = lM(() => {
-    let r = instances.filter(i => i.name.toLowerCase().includes(q.toLowerCase()));
+    let r = instances.filter(i => {
+      const ql = q.toLowerCase();
+      if (ql && !i.name.toLowerCase().includes(ql) && !(i.tags || []).some(tg => tg.toLowerCase().includes(ql))) return false;
+      if (tagSel.length && !tagSel.every(tg => (i.tags || []).includes(tg))) return false;
+      return true;
+    });
     const k = kpis;
     r.sort((a, b) => {
       if (sort === "name")  return a.name.localeCompare(b.name);
@@ -257,7 +331,26 @@ function LibraryScreen() {
       return (b.lastPlayed || 0) - (a.lastPlayed || 0);
     });
     return r;
-  }, [instances, q, sort, kpis]);
+  }, [instances, q, sort, kpis, tagSel]);
+
+  // Library-wide tag union (most-used first) + edit/colour handlers.
+  const allTags = lM(() => {
+    const counts = {};
+    instances.forEach(i => (i.tags || []).forEach(tg => { counts[tg] = (counts[tg] || 0) + 1; }));
+    return Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b)).map(k => ({ tag: k, count: counts[k] }));
+  }, [instances]);
+  const toggleTag = tg => setTagSel(s => s.includes(tg) ? s.filter(x => x !== tg) : [...s, tg]);
+  async function saveInstanceMeta(inst, tags, note) {
+    setInstances(prev => prev.map(i => i.id === inst.id ? { ...i, tags, note } : i));
+    if (hasBridge) {
+      if (api.setInstanceTags) await api.setInstanceTags(inst.id, tags).catch(() => {});
+      if (api.setInstanceNote) await api.setInstanceNote(inst.id, note).catch(() => {});
+    }
+  }
+  async function saveInstanceTagColor(tag, color) {
+    setTagColors(c => ({ ...c, [tag]: color }));
+    if (hasBridge && api.setInstanceTagColor) await api.setInstanceTagColor(tag, color).catch(() => {});
+  }
 
   async function doDelete(inst) {
     setDeleteTarget(null);
@@ -272,6 +365,7 @@ function LibraryScreen() {
   const menuFor = lCb(inst => {
     const items = [
       { icon: "play",       label: t("common.play"),       onClick: () => navigate("instance", { id: inst.id, autoLaunch: true }) },
+      { icon: "tag",        label: "Tags & note",          onClick: () => setTagsTarget(inst) },
       { icon: "edit",       label: t("common.edit"),       onClick: () => navigate("instance", { id: inst.id, tab: "settings" }) },
       { icon: "folderOpen", label: t("common.openFolder"), onClick: () => hasBridge && api.openFolder && api.openFolder(inst.id) },
       { icon: "copy",       label: t("common.duplicate"),  onClick: () => { if (api.duplicateInstance) { window.toast({ tone: "neutral", icon: "copy", title: "Duplicating…", body: inst.name }); api.duplicateInstance(inst.id).catch(() => {}); } } },
@@ -300,6 +394,14 @@ function LibraryScreen() {
       onCreated: (id) => { load(); if (id) navigate("instance", { id }); },
     }),
 
+    // Instance tags & note editor
+    tagsTarget && React.createElement(InstanceTagsDialog, {
+      instance: tagsTarget, tagColors, allTags,
+      onColor: saveInstanceTagColor,
+      onClose: () => setTagsTarget(null),
+      onSave: (tags, note) => saveInstanceMeta(tagsTarget, tags, note),
+    }),
+
     React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 14, marginBottom: 22, flexWrap: "wrap" } },
       React.createElement("h1", { style: { margin: 0, fontSize: 24, fontWeight: 720, letterSpacing: "-0.02em" } }, t("lib.title")),
       React.createElement("span", { className: "tnum", style: { fontSize: 13, color: "var(--text-faint)", fontWeight: 600 } },
@@ -322,6 +424,19 @@ function LibraryScreen() {
       hasBridge && React.createElement(Tip, { label: "Refresh instance list" },
         React.createElement(Btn, { variant: "ghost", size: "icon", onClick: load },
           React.createElement(Icon, { name: "refresh", size: 16 }))),
+    ),
+
+    state === "ready" && allTags.length > 0 && React.createElement("div", { style: { display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", marginBottom: 18 } },
+      React.createElement(Icon, { name: "tag", size: 13, style: { color: "var(--text-faint)", flexShrink: 0 } }),
+      allTags.map(({ tag, count }) => {
+        const on = tagSel.includes(tag);
+        return React.createElement("button", { key: tag, className: "no-drag", onClick: () => toggleTag(tag),
+          style: { ...modTagChip(tag, true, tagColors[tag]), display: "inline-flex", alignItems: "center", padding: "3px 9px", cursor: "pointer", opacity: on ? 1 : 0.6, outline: on ? "2px solid " + tagEffectiveHex(tag, tagColors) : "none", outlineOffset: 1 } },
+          tag, React.createElement("span", { style: { opacity: 0.7, marginLeft: 5 } }, count));
+      }),
+      tagSel.length > 0 && React.createElement("button", { className: "no-drag", onClick: () => setTagSel([]),
+        style: { marginLeft: 4, fontSize: 11, color: "var(--text-faint)", background: "transparent", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 } },
+        React.createElement(Icon, { name: "x", size: 12 }), "Clear"),
     ),
 
     state === "loading" && React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "var(--gap-grid)" } },
@@ -349,13 +464,13 @@ function LibraryScreen() {
     state === "ready" && (view === "grid"
       ? React.createElement("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(290px, 1fr))", gap: "var(--gap-grid)" } },
           filtered.map(inst => React.createElement(InstanceCard, {
-            key: inst.id, instance: inst, kpi: kpis[inst.id], t, fmt, menu: menuFor(inst),
+            key: inst.id, instance: inst, kpi: kpis[inst.id], t, fmt, menu: menuFor(inst), tagColors,
             onOpen:  () => navigate("instance", { id: inst.id }),
             onPlay:  () => navigate("instance", { id: inst.id, autoLaunch: true }),
           })))
       : React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
           filtered.map(inst => React.createElement(InstanceRow, {
-            key: inst.id, instance: inst, kpi: kpis[inst.id], t, fmt, menu: menuFor(inst),
+            key: inst.id, instance: inst, kpi: kpis[inst.id], t, fmt, menu: menuFor(inst), tagColors,
             onOpen:  () => navigate("instance", { id: inst.id }),
             onPlay:  () => navigate("instance", { id: inst.id, autoLaunch: true }),
           })))

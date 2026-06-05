@@ -618,13 +618,110 @@ function DepGraph({ nodes, edges }) {
 }
 
 /* ============ MODS ============ */
+// Stable per-tag colour so a label (e.g. "optimization") always looks the same.
+function modTagHue(s) {
+  let h = 0; const str = String(s || "");
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+function modTagChip(s, big, color) {
+  const base = { borderRadius: 7, fontWeight: 600, fontSize: big ? 11.5 : 10.5, lineHeight: 1.4, whiteSpace: "nowrap" };
+  if (color) return { ...base,
+    background: "color-mix(in oklab, " + color + " 20%, transparent)",
+    color: "color-mix(in oklab, " + color + " 58%, white)",
+    border: "1px solid color-mix(in oklab, " + color + " 50%, transparent)",
+  };
+  const h = modTagHue(s);
+  return { ...base,
+    background: "hsl(" + h + " 70% 50% / 0.16)",
+    color: "hsl(" + h + " 85% 78%)",
+    border: "1px solid hsl(" + h + " 70% 55% / 0.38)",
+  };
+}
+// HSL→hex so the colour picker can open at a tag's current (auto) colour.
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(Math.min(k(n) - 3, 9 - k(n)), 1));
+  const to = n => Math.round(255 * f(n)).toString(16).padStart(2, "0");
+  return "#" + to(0) + to(8) + to(4);
+}
+function tagEffectiveHex(tag, colors) {
+  if (colors && colors[tag]) return colors[tag];
+  return hslToHex(modTagHue(tag), 68, 60);
+}
+
+// Inline editor shown under a mod row: manage its user tags + a free-text note.
+function ModMetaEditor({ m, onTags, onNote, allTags, tagColors, onColor }) {
+  const [val, setVal]   = tS("");
+  const [note, setNote] = tS(m.note || "");
+  tE(() => setNote(m.note || ""), [m.note, m.id]);
+  const tags = m.tags || [];
+  function add(raw) {
+    const parts = String(raw).split(/[,\n]+/).map(s => s.trim()).filter(Boolean);
+    if (!parts.length) return;
+    const next = tags.slice();
+    parts.forEach(p => { if (!next.some(x => x.toLowerCase() === p.toLowerCase())) next.push(p); });
+    onTags(m, next.slice(0, 12)); setVal("");
+  }
+  const remove = tg => onTags(m, tags.filter(x => x !== tg));
+  const suggestions = (allTags || []).map(a => a.tag)
+    .filter(tg => !tags.some(x => x.toLowerCase() === tg.toLowerCase())).slice(0, 8);
+  // Colour swatch that opens the native picker; choice applies to the tag everywhere.
+  const swatch = tg => React.createElement("label", { className: "no-drag", title: "Pick tag colour",
+      style: { width: 13, height: 13, borderRadius: 4, background: tagEffectiveHex(tg, tagColors), border: "1px solid rgba(255,255,255,.3)", cursor: "pointer", flexShrink: 0, position: "relative", overflow: "hidden", display: "inline-block" } },
+    React.createElement("input", { type: "color", value: tagEffectiveHex(tg, tagColors), onChange: e => onColor && onColor(tg, e.target.value),
+      style: { position: "absolute", inset: 0, opacity: 0, cursor: "pointer", border: "none", padding: 0, width: "100%", height: "100%" } }));
+  return React.createElement("div", { style: { padding: "2px 16px 14px 60px", display: "flex", flexDirection: "column", gap: 10, background: "var(--panel-2)" } },
+    React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" } },
+      tags.length === 0 && React.createElement("span", { style: { fontSize: 11.5, color: "var(--text-faint)" } }, "No tags yet — add your own labels to group & filter."),
+      tags.map(tg => React.createElement("span", { key: tg, style: { ...modTagChip(tg, true, tagColors && tagColors[tg]), display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 7px" } },
+        swatch(tg),
+        tg,
+        React.createElement("button", { onClick: () => remove(tg), className: "no-drag", style: { display: "grid", placeItems: "center", border: "none", background: "transparent", color: "inherit", padding: 0, opacity: 0.85, cursor: "pointer" } },
+          React.createElement(Icon, { name: "x", size: 11 }))))),
+    React.createElement(TextInput, { value: val, onChange: setVal, placeholder: "Add tag, press Enter (e.g. optimization, visuals, create addon)", icon: "tag", size: "sm",
+      onKeyDown: e => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); add(val); } },
+      onBlur: () => add(val) }),
+    suggestions.length > 0 && React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" } },
+      React.createElement("span", { style: { fontSize: 11, color: "var(--text-faint)" } }, "Quick add:"),
+      suggestions.map(tg => React.createElement("button", { key: tg, className: "no-drag", onClick: () => add(tg), style: { ...modTagChip(tg, false, tagColors && tagColors[tg]), padding: "2px 8px", cursor: "pointer" } }, "+ " + tg))),
+    React.createElement("textarea", {
+      value: note, onChange: e => setNote(e.target.value),
+      onBlur: () => { if (note !== (m.note || "")) onNote(m, note); },
+      placeholder: "Note — why you added it, settings, reminders…", rows: 2,
+      style: { width: "100%", resize: "vertical", background: "var(--panel)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "8px 10px", fontSize: 12, fontFamily: "inherit", lineHeight: 1.5, boxSizing: "border-box" },
+    }));
+}
+
 function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge, onModsChanged }) {
   const [mods, setMods] = tS(mods0);
   const [q, setQ] = tS("");
   const [filter, setFilter] = tS("all");
   const [dragOver, setDragOver] = tS(false);
+  const [editing, setEditing] = tS(null);   // mod.id whose tag/note editor is open
+  const [tagSel, setTagSel]   = tS([]);      // active tag filters (AND)
+  const [tagColors, setTagColors] = tS({});  // tag name → chosen hex (auto-hue when unset)
   const dragCnt = tRf(0);
   tE(() => setMods(mods0), [mods0]);
+  tE(() => {
+    if (hasBridge && api.getTagColors) api.getTagColors(instance.id).then(c => setTagColors(c || {})).catch(() => {});
+  }, [instance.id]);
+
+  // Persist tag/note edits to the bridge and reflect them locally right away.
+  async function saveTags(m, tags) {
+    setMods(ms => ms.map(x => x.id === m.id ? { ...x, tags } : x));
+    if (hasBridge && api.setModTags) await api.setModTags(instance.id, m.file, tags).catch(() => {});
+  }
+  async function saveNote(m, note) {
+    setMods(ms => ms.map(x => x.id === m.id ? { ...x, note } : x));
+    if (hasBridge && api.setModNote) await api.setModNote(instance.id, m.file, note).catch(() => {});
+  }
+  async function saveTagColor(tag, color) {
+    setTagColors(c => ({ ...c, [tag]: color }));
+    if (hasBridge && api.setTagColor) await api.setTagColor(instance.id, tag, color).catch(() => {});
+  }
 
   function reloadMods() {
     if (hasBridge) api.getMods(instance.id).then(m => setMods(m || [])).catch(() => {});
@@ -656,13 +753,24 @@ function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge, onModsChanged 
   const updateCount = mods.filter(m => m.update).length;
   const enabledCount = mods.filter(m => m.enabled).length;
 
+  // Union of every user tag across this instance's mods, most-used first.
+  const allTags = tM(() => {
+    const counts = {};
+    mods.forEach(m => (m.tags || []).forEach(tg => { counts[tg] = (counts[tg] || 0) + 1; }));
+    return Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b))
+      .map(k => ({ tag: k, count: counts[k] }));
+  }, [mods]);
+  const toggleTag = tg => setTagSel(s => s.includes(tg) ? s.filter(x => x !== tg) : [...s, tg]);
+
   const filtered = tM(() => mods.filter(m => {
-    if (q && !m.name.toLowerCase().includes(q.toLowerCase())) return false;
-    if (filter === "optim")    return m.optimization;
-    if (filter === "updates")  return m.update;
-    if (filter === "disabled") return !m.enabled;
+    if (q && !m.name.toLowerCase().includes(q.toLowerCase())
+        && !(m.tags || []).some(tg => tg.toLowerCase().includes(q.toLowerCase()))) return false;
+    if (filter === "optim"    && !m.optimization) return false;
+    if (filter === "updates"  && !m.update)       return false;
+    if (filter === "disabled" && m.enabled)       return false;
+    if (tagSel.length && !tagSel.every(tg => (m.tags || []).includes(tg))) return false;
     return true;
-  }), [mods, q, filter]);
+  }), [mods, q, filter, tagSel]);
 
   // Real toggle: rename the jar via the bridge (jar <-> jar.disabled)
   async function toggle(m) {
@@ -848,6 +956,18 @@ function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge, onModsChanged 
       }),
       hasBridge && React.createElement(Btn, { variant: "outline", size: "sm", icon: "upload", onClick: pickLocalMods }, "Add .jar"),
     ),
+    allTags.length > 0 && React.createElement("div", { style: { display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", padding: "10px 16px", borderBottom: "1px solid var(--border)" } },
+      React.createElement(Icon, { name: "tag", size: 13, style: { color: "var(--text-faint)", flexShrink: 0 } }),
+      allTags.map(({ tag, count }) => {
+        const on = tagSel.includes(tag);
+        return React.createElement("button", { key: tag, className: "no-drag", onClick: () => toggleTag(tag),
+          style: { ...modTagChip(tag, true, tagColors[tag]), display: "inline-flex", alignItems: "center", padding: "3px 9px", cursor: "pointer", opacity: on ? 1 : 0.6, outline: on ? "2px solid " + tagEffectiveHex(tag, tagColors) : "none", outlineOffset: 1 } },
+          tag, React.createElement("span", { style: { opacity: 0.7, marginLeft: 5 } }, count));
+      }),
+      tagSel.length > 0 && React.createElement("button", { className: "no-drag", onClick: () => setTagSel([]),
+        style: { marginLeft: 4, fontSize: 11, color: "var(--text-faint)", background: "transparent", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 } },
+        React.createElement(Icon, { name: "x", size: 12 }), "Clear"),
+    ),
     React.createElement("div", { style: { maxHeight: 520, overflowY: "auto" } },
       filtered.length === 0
         ? React.createElement("div", { style: { padding: 40 } },
@@ -855,29 +975,44 @@ function ModsTab({ instance, mods: mods0, t, fmt, api, hasBridge, onModsChanged 
         : filtered.map((m, i) => React.createElement("div", {
             key: m.id,
             style: {
-              display: "flex", alignItems: "center", gap: 12, padding: "11px 16px",
               borderBottom: i < filtered.length - 1 ? "1px solid var(--border-faint)" : "none",
-              opacity: m.enabled ? 1 : 0.45, transition: "opacity .2s",
+              background: editing === m.id ? "var(--panel-2)" : "transparent", transition: "background .15s",
             },
           },
             React.createElement("div", {
-              style: { width: 32, height: 32, borderRadius: 9, display: "grid", placeItems: "center", flexShrink: 0,
-                background: m.optimization ? "var(--acc-soft)" : "var(--panel-2)",
-                color: m.optimization ? "var(--acc-text)" : "var(--text-faint)", border: "1px solid var(--border)" },
-            }, React.createElement(Icon, { name: m.optimization ? "zap" : "package", size: 15 })),
-            React.createElement("div", { style: { flex: 1, minWidth: 0 } },
-              React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                React.createElement("span", { style: { fontSize: 13.5, fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, m.name),
-                m.optimization && React.createElement(Tip, { label: t("mods.optimTip") },
-                  React.createElement(Badge, { tone: "accent", size: "sm" }, "opt")),
-                m.update && React.createElement(Badge, { tone: "warn", size: "sm", icon: "download" }, t("mods.update")),
+              style: { display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", opacity: m.enabled ? 1 : 0.45, transition: "opacity .2s" },
+            },
+              React.createElement("div", {
+                style: { width: 32, height: 32, borderRadius: 9, display: "grid", placeItems: "center", flexShrink: 0,
+                  background: m.optimization ? "var(--acc-soft)" : "var(--panel-2)",
+                  color: m.optimization ? "var(--acc-text)" : "var(--text-faint)", border: "1px solid var(--border)" },
+              }, React.createElement(Icon, { name: m.optimization ? "zap" : "package", size: 15 })),
+              React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" } },
+                  React.createElement("span", { style: { fontSize: 13.5, fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 } }, m.name),
+                  m.optimization && React.createElement(Tip, { label: t("mods.optimTip") },
+                    React.createElement(Badge, { tone: "accent", size: "sm" }, "opt")),
+                  m.update && React.createElement(Badge, { tone: "warn", size: "sm", icon: "download" }, t("mods.update")),
+                  (m.tags || []).map(tg => React.createElement("span", { key: tg, className: "no-drag", onClick: () => toggleTag(tg),
+                    style: { ...modTagChip(tg, false, tagColors[tg]), padding: "1px 7px", cursor: "pointer" } }, tg)),
+                ),
+                (m.version || m.note) && React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, marginTop: 2, minWidth: 0 } },
+                  m.version && React.createElement("span", { className: "mono", style: { fontSize: 11, color: "var(--text-faint)", flexShrink: 0 } }, "v" + m.version),
+                  m.note && React.createElement("span", { style: { fontSize: 11, color: "var(--text-faint)", display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0, overflow: "hidden" } },
+                    React.createElement(Icon, { name: "stickyNote", size: 11, style: { flexShrink: 0 } }),
+                    React.createElement("span", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, m.note))),
               ),
-              React.createElement("div", { className: "mono", style: { fontSize: 11, color: "var(--text-faint)", marginTop: 1 } },
-                m.version ? "v" + m.version : ""),
+              React.createElement("span", { className: "tnum", style: { fontSize: 11.5, color: "var(--text-faint)", minWidth: 56, textAlign: "right", flexShrink: 0 } },
+                m.sizeMb.toFixed(1) + " MB"),
+              React.createElement(Tip, { label: editing === m.id ? "Close" : "Tags & note" },
+                React.createElement("button", { className: "no-drag", onClick: () => setEditing(e => e === m.id ? null : m.id),
+                  style: { display: "grid", placeItems: "center", width: 30, height: 30, borderRadius: 8, border: "1px solid var(--border)", cursor: "pointer", flexShrink: 0,
+                    background: editing === m.id ? "var(--acc-soft)" : ((m.tags && m.tags.length) || m.note ? "var(--panel-2)" : "transparent"),
+                    color: editing === m.id ? "var(--acc-text)" : ((m.tags && m.tags.length) || m.note ? "var(--acc-2)" : "var(--text-faint)") } },
+                  React.createElement(Icon, { name: "tag", size: 14 }))),
+              React.createElement(Toggle, { checked: m.enabled, onChange: () => toggle(m), size: "sm" }),
             ),
-            React.createElement("span", { className: "tnum", style: { fontSize: 11.5, color: "var(--text-faint)", minWidth: 56, textAlign: "right" } },
-              m.sizeMb.toFixed(1) + " MB"),
-            React.createElement(Toggle, { checked: m.enabled, onChange: () => toggle(m), size: "sm" }),
+            editing === m.id && React.createElement(ModMetaEditor, { m, onTags: saveTags, onNote: saveNote, allTags, tagColors, onColor: saveTagColor }),
           )),
     ),
     React.createElement("div", { style: { padding: "11px 16px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-faint)" } },

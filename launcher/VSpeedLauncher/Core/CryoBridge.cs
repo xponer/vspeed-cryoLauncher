@@ -268,11 +268,19 @@ public sealed class CryoBridge
         {
             "getInstances"    => GetInstances(),
             "getInstance"     => GetInstance(args.Str("id")),
+            "setInstanceTags"      => SetInstanceTags(args.Str("id"), args["tags"]),
+            "setInstanceNote"      => SetInstanceNote(args.Str("id"), args.Str("note")),
+            "getInstanceTagColors" => GetInstanceTagColors(),
+            "setInstanceTagColor"  => SetInstanceTagColor(args.Str("tag"), args.Str("color")),
             "getKpis"         => GetKpis(args.Str("id")),
             "getCache"        => GetCache(args.Str("id")),
             "getMods"         => GetMods(args.Str("id")),
             "getHealth"       => GetHealth(args.Str("id")),
             "setModEnabled"   => SetModEnabled(args.Str("id"), args.Str("file"), args.Bool("enabled", true)),
+            "setModTags"      => SetModTags(args.Str("id"), args.Str("file"), args["tags"]),
+            "setModNote"      => SetModNote(args.Str("id"), args.Str("file"), args.Str("note")),
+            "getTagColors"    => GetTagColors(args.Str("id")),
+            "setTagColor"     => SetTagColor(args.Str("id"), args.Str("tag"), args.Str("color")),
             "openUrl"         => OpenUrl(args.Str("url")),
             "openPrism"       => OpenPrism(),
             "setProfileNextLaunch" => SetProfileNextLaunch(args.Str("id"), args.Bool("on", false)),
@@ -398,6 +406,7 @@ public sealed class CryoBridge
                     state = inst.State.ToString().ToLowerInvariant(),
                     jvmPid = inst.JvmPid, loadSeconds = inst.LoadSeconds,
                     residentMB = inst.ResidentMB, lastError = ex.Message,
+                    tags = new List<string>(), note = "",
                 });
             }
         }
@@ -421,6 +430,7 @@ public sealed class CryoBridge
     {
         var kpi    = _history.GetKpis(id);
         double wall = kpi.Avg > 0 ? kpi.Avg : EstimateWall(meta.ModCount);
+        var im     = LoadInstanceMeta(id);   // user tags + note for the whole pack
         return new
         {
             id           = meta.Id,
@@ -442,6 +452,8 @@ public sealed class CryoBridge
             loadSeconds  = meta.LoadSeconds,
             residentMB   = meta.ResidentMB,
             lastError    = meta.LastError,
+            tags         = im.Tags,
+            note         = im.Note,
         };
     }
 
@@ -471,6 +483,104 @@ public sealed class CryoBridge
         meta.LoadSeconds = inst.LoadSeconds;
         meta.ResidentMB  = inst.ResidentMB;
         meta.LastError   = inst.LastError ?? "";
+    }
+
+    // ── Per-instance user metadata: tags + note ──────────────────────────────
+    // Lets users label/group whole packs ("favorite", "smp", "testing") and jot
+    // a note. Stored next to the instance so it travels with a move/duplicate.
+    public sealed class InstanceUserMeta
+    {
+        public List<string> Tags { get; set; } = new();
+        public string       Note { get; set; } = "";
+    }
+
+    private string InstanceMetaPath(string id)
+        => Path.Combine(InstanceDataDir(id), "instances", id, "cryo-instance.json");
+
+    private InstanceUserMeta LoadInstanceMeta(string id)
+    {
+        try
+        {
+            var p = InstanceMetaPath(id);
+            if (!File.Exists(p)) return new();
+            return JsonSerializer.Deserialize<InstanceUserMeta>(File.ReadAllText(p), _jOpts) ?? new();
+        }
+        catch (Exception e) { Logger.Warn($"LoadInstanceMeta({id}): {e.Message}"); return new(); }
+    }
+
+    private bool SaveInstanceMeta(string id, InstanceUserMeta data)
+    {
+        try { File.WriteAllText(InstanceMetaPath(id), JsonSerializer.Serialize(data, _jOpts)); return true; }
+        catch (Exception e) { Logger.Warn($"SaveInstanceMeta({id}): {e.Message}"); return false; }
+    }
+
+    private object SetInstanceTags(string id, JsonNode? tagsNode)
+    {
+        if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
+        var tags = new List<string>();
+        if (tagsNode is JsonArray arr)
+        {
+            foreach (var t in arr)
+            {
+                var s = (t?.GetValue<string>() ?? "").Trim();
+                if (s.Length == 0) continue;
+                if (s.Length > 24) s = s[..24];
+                if (!tags.Any(x => x.Equals(s, StringComparison.OrdinalIgnoreCase))) tags.Add(s);
+                if (tags.Count >= 12) break;
+            }
+        }
+        var data = LoadInstanceMeta(id);
+        data.Tags = tags;
+        return new { ok = SaveInstanceMeta(id, data), tags };
+    }
+
+    private object SetInstanceNote(string id, string note)
+    {
+        if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
+        note = (note ?? "").Trim();
+        if (note.Length > 500) note = note[..500];
+        var data = LoadInstanceMeta(id);
+        data.Note = note;
+        return new { ok = SaveInstanceMeta(id, data), note };
+    }
+
+    // Instance tag colours are library-wide (a tag name is shared across packs),
+    // so they live once in the app-data dir, not per-instance.
+    private static string InstanceTagColorsPath()
+        => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "VSpeedLauncher", "instance-tagcolors.json");
+
+    private Dictionary<string, string> LoadInstanceTagColors()
+    {
+        try
+        {
+            var p = InstanceTagColorsPath();
+            if (!File.Exists(p)) return new(StringComparer.OrdinalIgnoreCase);
+            var d = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(p), _jOpts);
+            return d == null ? new(StringComparer.OrdinalIgnoreCase) : new(d, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e) { Logger.Warn($"LoadInstanceTagColors: {e.Message}"); return new(StringComparer.OrdinalIgnoreCase); }
+    }
+
+    private object GetInstanceTagColors() => LoadInstanceTagColors();
+
+    private object SetInstanceTagColor(string tag, string color)
+    {
+        tag = (tag ?? "").Trim();
+        if (tag.Length == 0) return new { ok = false, error = "Empty tag." };
+        if (tag.Length > 24) tag = tag[..24];
+        color = (color ?? "").Trim();
+        var data = LoadInstanceTagColors();
+        if (color.Length == 0) data.Remove(tag);
+        else if (_hexColor.IsMatch(color)) data[tag] = color;
+        else return new { ok = false, error = "Invalid colour." };
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(InstanceTagColorsPath())!);
+            File.WriteAllText(InstanceTagColorsPath(), JsonSerializer.Serialize(data, _jOpts));
+            return new { ok = true, tag, color };
+        }
+        catch (Exception e) { Logger.Warn($"SetInstanceTagColor: {e.Message}"); return new { ok = false, error = e.Message }; }
     }
 
     private static object BuildRuntimeState(RunningInstance inst) => new
@@ -637,6 +747,8 @@ public sealed class CryoBridge
         var files = Directory.GetFiles(modsDir, "*.jar")
             .Concat(Directory.GetFiles(modsDir, "*.jar.disabled"));
 
+        var modMeta = LoadModMeta(id);   // user tags + notes (keyed by base filename)
+
         return files.Select(path =>
             {
                 var file    = Path.GetFileName(path);                 // real filename, incl. .disabled
@@ -648,6 +760,7 @@ public sealed class CryoBridge
                 var name    = dash > 0 ? fn[..dash] : fn;
                 var ver     = dash > 0 ? fn[(dash + 1)..] : "";
                 var isOptim = knownOptim.Any(k => name.Contains(k, StringComparison.OrdinalIgnoreCase));
+                var mm      = modMeta.GetValueOrDefault(baseN);
                 return new
                 {
                     id           = id + "::" + file,   // id carries the real filename for toggling
@@ -658,6 +771,8 @@ public sealed class CryoBridge
                     optimization = isOptim,
                     sizeMb       = Math.Round(sizeMb, 1),
                     update       = false,
+                    tags         = mm?.Tags ?? new List<string>(),
+                    note         = mm?.Note ?? "",
                 };
             })
             .OrderBy(m => m.name)
@@ -692,6 +807,154 @@ public sealed class CryoBridge
         {
             return new { ok = false, error = e.Message };
         }
+    }
+
+    // ── Per-mod metadata: user tags + notes ──────────────────────────────────
+    // Stored alongside the instance (cryo-modmeta.json) keyed by the *base*
+    // filename (".disabled" stripped) so tags & notes survive enable/disable,
+    // which renames the jar. Lets users group/label mods (optimization, visuals,
+    // …) and filter by their own tags — entirely manual, never auto-applied.
+    public sealed class ModMetaEntry
+    {
+        public List<string> Tags { get; set; } = new();
+        public string       Note { get; set; } = "";
+    }
+
+    private string ModMetaPath(string id)
+        => Path.Combine(InstanceDataDir(id), "instances", id, "cryo-modmeta.json");
+
+    /// <summary>Strip a trailing ".disabled" so a mod keeps its tags when toggled.</summary>
+    private static string ModKey(string file)
+        => file.EndsWith(".disabled", StringComparison.OrdinalIgnoreCase)
+            ? file[..^".disabled".Length] : file;
+
+    private Dictionary<string, ModMetaEntry> LoadModMeta(string id)
+    {
+        try
+        {
+            var p = ModMetaPath(id);
+            if (!File.Exists(p)) return new(StringComparer.OrdinalIgnoreCase);
+            var d = JsonSerializer.Deserialize<Dictionary<string, ModMetaEntry>>(File.ReadAllText(p), _jOpts);
+            return d == null ? new(StringComparer.OrdinalIgnoreCase)
+                             : new(d, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e)
+        {
+            Logger.Warn($"LoadModMeta({id}): {e.Message}");
+            return new(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private bool SaveModMeta(string id, Dictionary<string, ModMetaEntry> data)
+    {
+        try
+        {
+            // Drop empty entries so the file stays tidy.
+            var clean = data
+                .Where(kv => (kv.Value.Tags?.Count ?? 0) > 0 || !string.IsNullOrWhiteSpace(kv.Value.Note))
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
+            File.WriteAllText(ModMetaPath(id), JsonSerializer.Serialize(clean, _jOpts));
+            return true;
+        }
+        catch (Exception e)
+        {
+            Logger.Warn($"SaveModMeta({id}): {e.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Replace the full tag list for one mod. Tags are trimmed, de-duped
+    /// (case-insensitive), length-capped, and limited in count to keep the UI sane.</summary>
+    private object SetModTags(string id, string file, JsonNode? tagsNode)
+    {
+        if (!IsSafeSegment(id) || !IsSafeSegment(file))
+            return new { ok = false, error = "Invalid mod or instance name." };
+        var tags = new List<string>();
+        if (tagsNode is JsonArray arr)
+        {
+            foreach (var t in arr)
+            {
+                var s = (t?.GetValue<string>() ?? "").Trim();
+                if (s.Length == 0) continue;
+                if (s.Length > 24) s = s[..24];
+                if (!tags.Any(x => x.Equals(s, StringComparison.OrdinalIgnoreCase))) tags.Add(s);
+                if (tags.Count >= 12) break;
+            }
+        }
+        var key   = ModKey(file);
+        var data  = LoadModMeta(id);
+        var mm    = data.GetValueOrDefault(key) ?? new ModMetaEntry();
+        mm.Tags   = tags;
+        data[key] = mm;
+        return new { ok = SaveModMeta(id, data), tags };
+    }
+
+    /// <summary>Set a free-text note for one mod (length-capped).</summary>
+    private object SetModNote(string id, string file, string note)
+    {
+        if (!IsSafeSegment(id) || !IsSafeSegment(file))
+            return new { ok = false, error = "Invalid mod or instance name." };
+        note = (note ?? "").Trim();
+        if (note.Length > 500) note = note[..500];
+        var key   = ModKey(file);
+        var data  = LoadModMeta(id);
+        var mm    = data.GetValueOrDefault(key) ?? new ModMetaEntry();
+        mm.Note   = note;
+        data[key] = mm;
+        return new { ok = SaveModMeta(id, data), note };
+    }
+
+    // ── Tag colours ──────────────────────────────────────────────────────────
+    // Colour is chosen per tag *name* (so "optimization" looks the same on every
+    // mod) and kept in its own small file, name → hex. Unset tags fall back to a
+    // stable auto-hue in the UI.
+    private string TagColorsPath(string id)
+        => Path.Combine(InstanceDataDir(id), "instances", id, "cryo-tagcolors.json");
+
+    private Dictionary<string, string> LoadTagColors(string id)
+    {
+        try
+        {
+            var p = TagColorsPath(id);
+            if (!File.Exists(p)) return new(StringComparer.OrdinalIgnoreCase);
+            var d = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(p), _jOpts);
+            return d == null ? new(StringComparer.OrdinalIgnoreCase)
+                             : new(d, StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e)
+        {
+            Logger.Warn($"LoadTagColors({id}): {e.Message}");
+            return new(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    private bool SaveTagColors(string id, Dictionary<string, string> data)
+    {
+        try { File.WriteAllText(TagColorsPath(id), JsonSerializer.Serialize(data, _jOpts)); return true; }
+        catch (Exception e) { Logger.Warn($"SaveTagColors({id}): {e.Message}"); return false; }
+    }
+
+    private object GetTagColors(string id)
+    {
+        if (!IsSafeSegment(id)) return new Dictionary<string, string>();
+        return LoadTagColors(id);
+    }
+
+    private static readonly Regex _hexColor = new(@"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$", RegexOptions.Compiled);
+
+    /// <summary>Set (or, with an empty colour, reset to auto) the colour of a tag.</summary>
+    private object SetTagColor(string id, string tag, string color)
+    {
+        if (!IsSafeSegment(id)) return new { ok = false, error = "Invalid instance." };
+        tag = (tag ?? "").Trim();
+        if (tag.Length == 0) return new { ok = false, error = "Empty tag." };
+        if (tag.Length > 24) tag = tag[..24];
+        color = (color ?? "").Trim();
+        var data = LoadTagColors(id);
+        if (color.Length == 0) data.Remove(tag);                 // reset → auto-hue
+        else if (_hexColor.IsMatch(color)) data[tag] = color;     // store the hex
+        else return new { ok = false, error = "Invalid colour." };
+        return new { ok = SaveTagColors(id, data), tag, color };
     }
 
     /// <summary>Opens a native file picker for .jar files and copies them into the

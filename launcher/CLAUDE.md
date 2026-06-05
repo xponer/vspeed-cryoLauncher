@@ -111,6 +111,29 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### v1.0.13 — released (GitHub) — manual tags, notes & colours for mods and packs
+- **Mod tags + notes** (instance → Mods tab) — assign your own labels (`optimization`, `visuals`,
+  `create addon`, …) and a free-text note to any mod. A tag button per row opens an inline editor;
+  tags render as coloured chips; a tag-filter row (live counts, AND) + search-matches-tags. Stored
+  in `cryo-modmeta.json` next to the instance, **keyed by base filename** so tags/notes survive
+  enable/disable (which renames the jar). Bridge: `setModTags`/`setModNote`; `getMods` returns them.
+- **Pack (instance) tags + notes** (Library → card "⋮" → Tags & note) — the same for whole packs.
+  Tags show as chips on cards/rows, note preview on cards; a **library-wide tag-filter row** (counts,
+  AND, Clear). Stored in `cryo-instance.json` next to the instance (travels with move/duplicate).
+  Bridge: `setInstanceTags`/`setInstanceNote`; `getInstances`/`getInstance` now return tags+note.
+- **Tag colours** — a native colour swatch on each tag chip. Mod-tag colours are per-instance
+  (`cryo-tagcolors.json`); pack-tag colours are library-wide (`instance-tagcolors.json` — a tag name
+  is shared across packs). Unset → a stable auto-hue, rendered via `color-mix` (readable on dark).
+  Bridge: `getTagColors`/`setTagColor`, `getInstanceTagColors`/`setInstanceTagColor` (hex-validated).
+- **Quick-add tag pool** — the pack dialog and the mod editor suggest tags already created elsewhere,
+  so you pick from the pool instead of retyping a tag letter-by-letter on every instance.
+- **Fix: tags silently lost** — typing a tag then clicking Save / clicking away **without pressing
+  Enter** dropped the text (only the note saved → `tags:[]`). Pending input is now flushed into a chip
+  on **Save** and on **blur**, in both the pack dialog and the mod editor. Root-caused & verified
+  end-to-end **live via computer-use** (tag persists; chip + filter + colour all render).
+- New `tag` + `stickyNote` icons (`ui.js`). Chip helpers (`modTagChip`/`modTagHue`/`tagEffectiveHex`/
+  `hslToHex`) live in `instance-tabs.js` and are reused as globals from `library.js`. Build clean (0/0).
+
 ### v1.0.12 — released (GitHub) — live colour-coded log console
 - **Live log tail** — the Logs screen now polls `getLogs` every ~1.2s (while viewing & not
   paused), so you can watch the game boot in real time. A "LIVE" indicator; autoscroll follows

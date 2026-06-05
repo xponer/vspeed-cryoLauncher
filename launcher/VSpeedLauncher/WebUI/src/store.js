@@ -245,6 +245,10 @@ function createBridgeApi() {
   return {
     async getInstances()             { return call("getInstances"); },
     async getInstance(id)            { return call("getInstance", { id }); },
+    async setInstanceTags(id, tags)       { return call("setInstanceTags", { id, tags: tags || [] }); },
+    async setInstanceNote(id, note)       { return call("setInstanceNote", { id, note: note || "" }); },
+    async getInstanceTagColors()          { return call("getInstanceTagColors", {}); },
+    async setInstanceTagColor(tag, color) { return call("setInstanceTagColor", { tag, color: color || "" }); },
     async getKpis(id)                { return call("getKpis", { id }); },
     async getCache(id)               { return call("getCache", { id }); },
     async getMods(id)                { return call("getMods", { id }); },
@@ -298,6 +302,10 @@ function createBridgeApi() {
     async moveInstance(id, targetRoot)  { return call("moveInstance",       { id, targetRoot }); },
     // ── Shell / file actions ──────────────────────────────────────────────────
     async setModEnabled(id, file, en)   { return call("setModEnabled",      { id, file, enabled: !!en }); },
+    async setModTags(id, file, tags)    { return call("setModTags",         { id, file, tags: tags || [] }); },
+    async setModNote(id, file, note)    { return call("setModNote",         { id, file, note: note || "" }); },
+    async getTagColors(id)              { return call("getTagColors",       { id }); },
+    async setTagColor(id, tag, color)   { return call("setTagColor",        { id, tag, color: color || "" }); },
     async openUrl(url)                  { return call("openUrl",            { url }); },
     async openPrism()                   { return call("openPrism"); },
     async setProfileNextLaunch(id, on)  { return call("setProfileNextLaunch", { id, on: !!on }); },
