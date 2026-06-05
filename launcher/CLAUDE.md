@@ -111,6 +111,34 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### v1.0.14 — released (GitHub) — host a dedicated server for any pack
+- **Host server tab** (instance → "Host server") — run a real dedicated Minecraft server for a
+  modpack, set up in one click from the pack's OWN mods + config. New `Core/CryoBridge.Servers.cs`
+  (CryoBridge is now `partial`). Servers live under `%LocalAppData%\VSpeedLauncher\servers\<id>\`,
+  one per instance; metadata in `cryo-server.json`.
+- **One-click setup** — copies the instance's enabled mod jars + `config`/`defaultconfigs`/`kubejs`/
+  `scripts`, then installs the loader's server: **NeoForge** (official `--installServer`), **Fabric**
+  (fabric-server-launch), **Vanilla** (Mojang server.jar). Forge/Quilt show "coming soon"
+  (`IsLoaderServerSupported`). Writes `server.properties` + JVM heap (`user_jvm_args.txt` for NeoForge).
+- **Live console with commands** — process launched with redirected stdin/stdout; a console
+  ring-buffer the UI polls (~1.2s). States stopped/installing/starting/running/stopping/crashed;
+  crash detection only on early non-zero exit. Type commands → stdin; **Stop** sends `stop` then
+  kills after 20s. EULA gate (writes `eula.txt` only after the user accepts in-app).
+- **Filtered console** (`ServerConsole`) — same toolkit as the Logs screen: parses each line into
+  time/level/thread/source, 6-level chips with counts, Errors-only, thread + source filters
+  (click-to-filter), regex search, per-segment auto-hued colouring. Reuses Logs globals
+  (`LEVEL_META`/`LEVELS`/`hueFor`/`highlight`).
+- **Full settings editor** (`ServerSettings`) — a Console/Settings switch; the Settings view is a
+  complete `server.properties` editor: ~45 standard keys with proper widgets (toggles, difficulty/
+  gamemode/world-type dropdowns, numeric + text), grouped (World/Players/Mobs & view/Server &
+  network/Resource pack), a filter box, and an **"Other / advanced"** section for any non-schema
+  keys in the file — so everything is editable in-app, no file editing. Backend `getServerProperties`/
+  `saveServerProperties` preserve comments + key order, sync the cached port, refuse while running.
+- New `server` + `terminal` icons (`ui.js`). 12 new bridge methods + store wrappers. Builds clean
+  (0/0); UI verified to load + the tab/console/settings render with zero page errors. ⚠️ A real
+  end-to-end server *boot* (NeoForge `--installServer` + first start) was **not** run this session
+  (no UI automation) — exercise Set up → Accept EULA → Start on a NeoForge pack before relying on it.
+
 ### v1.0.13 — released (GitHub) — manual tags, notes & colours for mods and packs
 - **Mod tags + notes** (instance → Mods tab) — assign your own labels (`optimization`, `visuals`,
   `create addon`, …) and a free-text note to any mod. A tag button per row opens an inline editor;

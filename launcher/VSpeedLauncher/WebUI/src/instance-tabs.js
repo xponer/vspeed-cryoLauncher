@@ -1714,4 +1714,409 @@ function ScreenshotsTab({ instance, api, hasBridge }) {
             React.createElement(Icon, { name: "trash", size: 14 })))))));
 }
 
-window.CryoInstanceTabs = { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard, HealthCard, ScreenshotsTab };
+/* ============ HOST SERVER (run a dedicated server for this pack) ============ */
+// Parse a raw server-console line into the same shape the Logs screen uses, so
+// we can filter/colour by time · level · thread · mod source. Reuses the Logs
+// globals (LEVEL_META, LEVELS, hueFor, highlight) for a consistent look.
+const SRV_LINE_RE = /^\[([0-9:.]+)\]\s*\[([^/\]]+)\/(\w+)\](?:\s*\[([^\]]+)\])?:?\s?([\s\S]*)$/;
+function parseSrvLine(raw, i) {
+  const m = SRV_LINE_RE.exec(raw);
+  if (m) {
+    let lvl = (m[3] || "INFO").toUpperCase();
+    if (lvl === "SEVERE") lvl = "ERROR";
+    else if (lvl === "WARNING") lvl = "WARN";
+    else if (lvl === "FINE" || lvl === "FINER" || lvl === "FINEST") lvl = "DEBUG";
+    if (LEVELS.indexOf(lvl) < 0) lvl = "INFO";
+    return { id: i, raw, time: m[1] || "", thread: (m[2] || "").trim(), level: lvl, src: (m[4] || "").trim(), msg: m[5] || "" };
+  }
+  let level = "INFO";
+  if (/(\bERROR\b|\bFATAL\b|\bSEVERE\b|Exception|\[setup error\]|\[start error\])/.test(raw)) level = "ERROR";
+  else if (/\bWARN/.test(raw)) level = "WARN";
+  return { id: i, raw, time: "", thread: "", level, src: "", msg: raw };
+}
+
+function ServerConsole({ lines, running, busy, setupMsg, onCommand }) {
+  const [q, setQ]         = tS("");
+  const [regex, setRegex] = tS(false);
+  const [levels, setLevels] = tS({ TRACE: true, DEBUG: true, INFO: true, WARN: true, ERROR: true, FATAL: true });
+  const [thread, setThread] = tS("all");
+  const [src, setSrc]     = tS("all");
+  const [cmd, setCmd]     = tS("");
+  const ref = tRf(null);
+  const stick = tRf(true);
+
+  const entries = tM(() => (lines || []).map((l, i) => parseSrvLine(l, i)), [lines]);
+  const counts  = tM(() => { const c = {}; for (const e of entries) c[e.level] = (c[e.level] || 0) + 1; return c; }, [entries]);
+  const threads = tM(() => ["all", ...Array.from(new Set(entries.map(e => e.thread).filter(Boolean)))], [entries]);
+  const sources = tM(() => ["all", ...Array.from(new Set(entries.map(e => e.src).filter(Boolean)))].sort((a, b) => a === "all" ? -1 : b === "all" ? 1 : a.localeCompare(b)), [entries]);
+  const filtered = tM(() => {
+    let re = null; if (q && regex) { try { re = new RegExp(q, "i"); } catch { re = null; } }
+    return entries.filter(e => {
+      if (!levels[e.level]) return false;
+      if (thread !== "all" && e.thread !== thread) return false;
+      if (src !== "all" && e.src !== src) return false;
+      if (q) { const hay = e.raw || ""; return re ? re.test(hay) : hay.toLowerCase().includes(q.toLowerCase()); }
+      return true;
+    });
+  }, [entries, levels, thread, src, q, regex]);
+
+  tE(() => { const el = ref.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [filtered]);
+  function onScroll(e) { const el = e.target; stick.current = (el.scrollHeight - el.scrollTop - el.clientHeight) < 40; }
+
+  const lvlToggle = lv => setLevels(s => ({ ...s, [lv]: !s[lv] }));
+  const errorsOnly = !levels.INFO && !levels.DEBUG && !levels.TRACE && levels.ERROR;
+  const toggleErrorsOnly = () => setLevels(errorsOnly
+    ? { TRACE: true, DEBUG: true, INFO: true, WARN: true, ERROR: true, FATAL: true }
+    : { TRACE: false, DEBUG: false, INFO: false, WARN: true, ERROR: true, FATAL: true });
+  const filterActive = thread !== "all" || src !== "all";
+  function send() { const c = cmd.trim(); if (!c) return; setCmd(""); stick.current = true; onCommand && onCommand(c); }
+
+  const pill = (txt, color, onClick, title) => React.createElement("button", { className: "no-drag", onClick, title,
+    style: { flexShrink: 0, background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer", color, whiteSpace: "nowrap" } }, txt);
+
+  return React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9, marginBottom: 10, flexWrap: "wrap" } },
+      React.createElement(Icon, { name: "terminal", size: 16, style: { color: "var(--acc-2)" } }),
+      React.createElement("h3", { style: { margin: 0, fontSize: 14.5, fontWeight: 680 } }, "Console"),
+      running && React.createElement("span", { style: { display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: "var(--success)" } },
+        React.createElement("span", { style: { width: 6, height: 6, borderRadius: 99, background: "var(--success)", animation: "pulseGlow 1.6s ease-in-out infinite" } }), "LIVE"),
+      busy && setupMsg && React.createElement("span", { style: { fontSize: 11.5, color: "var(--text-faint)" } }, setupMsg),
+      React.createElement("span", { className: "tnum", style: { marginLeft: "auto", fontSize: 11.5, color: "var(--text-faint)" } }, filtered.length + " lines")),
+
+    // filter toolbar
+    React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 8 } },
+      React.createElement("div", { style: { display: "flex", gap: 0 } },
+        React.createElement(TextInput, { value: q, onChange: setQ, placeholder: "Search console…", icon: "search", size: "sm", style: { flex: 1, minWidth: 0, borderRadius: "var(--r-md) 0 0 var(--r-md)", borderRight: "none" } }),
+        React.createElement("button", { onClick: () => setRegex(r => !r), className: "no-drag mono",
+          style: { padding: "0 12px", flexShrink: 0, borderRadius: "0 var(--r-md) var(--r-md) 0", border: "1px solid var(--border)", fontSize: 12, fontWeight: 700, background: regex ? "var(--acc-soft)" : "var(--panel-2)", color: regex ? "var(--acc-text)" : "var(--text-dim)" } }, ".*")),
+      React.createElement("div", { style: { display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" } },
+        LEVELS.map(lv => {
+          const n = counts[lv] || 0;
+          return React.createElement("button", { key: lv, onClick: () => lvlToggle(lv), className: "no-drag",
+            style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "0 9px", height: 26, borderRadius: "var(--r-sm)", fontSize: 10.5, fontWeight: 700, letterSpacing: "0.03em",
+              border: "1px solid " + (levels[lv] ? "transparent" : "var(--border)"),
+              background: levels[lv] ? (LEVEL_META[lv].bg === "transparent" ? "var(--panel-hi)" : LEVEL_META[lv].bg) : "transparent",
+              color: levels[lv] ? LEVEL_META[lv].color : "var(--text-faint)", opacity: levels[lv] ? 1 : 0.45 } },
+            lv, n > 0 && React.createElement("span", { className: "tnum", style: { fontSize: 9.5, fontWeight: 700, opacity: 0.85, background: "color-mix(in oklab, currentColor 18%, transparent)", borderRadius: 6, padding: "0 4px" } }, n > 9999 ? "9999+" : n));
+        }),
+        React.createElement("div", { style: { width: 1, height: 16, background: "var(--border)", margin: "0 3px" } }),
+        React.createElement(Btn, { variant: errorsOnly ? "accentSoft" : "ghost", size: "sm", icon: "alert", onClick: toggleErrorsOnly }, errorsOnly ? "Show all" : "Errors only")),
+      React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" } },
+        React.createElement(Select, { value: thread, onChange: setThread, size: "sm", width: 168, icon: "cpu",
+          options: threads.map(th => ({ value: th, label: th === "all" ? "All threads" : th })) }),
+        React.createElement(Select, { value: src, onChange: setSrc, size: "sm", width: 184, icon: "package",
+          options: sources.map(s => ({ value: s, label: s === "all" ? "All sources" : s })) }),
+        filterActive && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: () => { setThread("all"); setSrc("all"); } }, "Clear"),
+        React.createElement("div", { style: { flex: 1, minWidth: 8 } }),
+        React.createElement(Tip, { label: "Scroll to bottom" }, React.createElement(Btn, { variant: "ghost", size: "icon", onClick: () => { stick.current = true; if (ref.current) ref.current.scrollTop = ref.current.scrollHeight; } }, React.createElement(Icon, { name: "chevronDown", size: 15 }))),
+        React.createElement(Tip, { label: "Copy" }, React.createElement(Btn, { variant: "ghost", size: "icon", onClick: () => { if (navigator.clipboard) { navigator.clipboard.writeText(filtered.map(e => e.raw).join("\n")); window.toast({ tone: "neutral", icon: "copy", title: "Copied" }); } } }, React.createElement(Icon, { name: "copy", size: 15 }))))),
+
+    // viewport
+    React.createElement("div", { ref, onScroll, className: "mono",
+      style: { height: 420, overflowY: "auto", background: "var(--bg-0, #0b0e14)", border: "1px solid var(--border)", borderRadius: "var(--r-md)", padding: "8px 0", fontSize: 11.5, lineHeight: "17px" } },
+      filtered.length === 0
+        ? React.createElement("div", { style: { padding: 40, textAlign: "center", color: "var(--text-faint)" } }, entries.length ? "No lines match the filters." : (running || busy ? "Waiting for output…" : "Console is empty — start the server to see output."))
+        : filtered.map(e => {
+            const meta = LEVEL_META[e.level] || LEVEL_META.INFO;
+            const sev = e.level === "ERROR" || e.level === "FATAL";
+            const msgColor = sev ? "var(--error)" : e.level === "WARN" ? "var(--warn)" : (/^>\s/.test(e.raw) || /^\[cryo\]/.test(e.raw)) ? "var(--acc-text)" : "var(--text)";
+            const edge = e.level === "FATAL" || e.level === "ERROR" ? "var(--error)" : e.level === "WARN" ? "var(--warn)" : "transparent";
+            return React.createElement("div", { key: e.id, style: { display: "flex", alignItems: "flex-start", gap: 7, padding: "1px 12px", background: meta.bg, borderLeft: "2px solid " + edge, whiteSpace: "pre-wrap", wordBreak: "break-word" } },
+              (e.thread || e.src)
+                ? React.createElement("span", { style: { flex: 1, minWidth: 0 } },
+                    e.time && React.createElement("span", { style: { color: "var(--text-faint)" } }, e.time + " "),
+                    React.createElement("span", { style: { color: meta.color, fontWeight: 700 } }, e.level + " "),
+                    e.thread && pill("[" + e.thread + "] ", hueFor(e.thread), () => setThread(e.thread), "Filter to this thread"),
+                    e.src && pill(e.src + ": ", hueFor(e.src), () => setSrc(e.src), "Filter to this source"),
+                    React.createElement("span", { style: { color: msgColor } }, highlight(e.msg || "", q, regex)))
+                : React.createElement("span", { style: { flex: 1, minWidth: 0, color: msgColor } }, highlight(e.raw, q, regex)));
+          })),
+
+    // command input
+    React.createElement("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
+      React.createElement(TextInput, { value: cmd, onChange: setCmd, mono: true, size: "sm", icon: "terminal", style: { flex: 1 },
+        placeholder: running ? "Type a command — e.g. say hi, op <user>, weather clear" : "Start the server to send commands",
+        onKeyDown: e => { if (e.key === "Enter") { e.preventDefault(); send(); } } }),
+      React.createElement(Btn, { variant: "primary", size: "sm", onClick: send, disabled: !running || !cmd.trim() }, "Send")));
+}
+
+// Every standard server.properties key with a proper widget, grouped — so you
+// configure the whole server from the launcher and never edit the file by hand.
+const SERVER_PROP_SCHEMA = [
+  { group: "World", fields: [
+    { k: "level-name", label: "World folder name", type: "str", def: "world" },
+    { k: "level-seed", label: "Seed", type: "str", def: "" },
+    { k: "gamemode", label: "Game mode", type: "enum", def: "survival", opts: ["survival", "creative", "adventure", "spectator"] },
+    { k: "difficulty", label: "Difficulty", type: "enum", def: "easy", opts: ["peaceful", "easy", "normal", "hard"] },
+    { k: "hardcore", label: "Hardcore", type: "bool", def: "false" },
+    { k: "level-type", label: "World type", type: "enum", def: "minecraft:normal", opts: ["minecraft:normal", "minecraft:flat", "minecraft:large_biomes", "minecraft:amplified", "minecraft:single_biome_surface"] },
+    { k: "generate-structures", label: "Generate structures", type: "bool", def: "true" },
+    { k: "max-world-size", label: "Max world size (radius)", type: "int", def: "29999984" },
+    { k: "allow-nether", label: "Allow the Nether", type: "bool", def: "true" },
+    { k: "spawn-protection", label: "Spawn protection radius", type: "int", def: "16" },
+  ] },
+  { group: "Players", fields: [
+    { k: "max-players", label: "Max players", type: "int", def: "20" },
+    { k: "pvp", label: "PvP", type: "bool", def: "true" },
+    { k: "online-mode", label: "Online mode (verify accounts)", type: "bool", def: "true" },
+    { k: "white-list", label: "Whitelist", type: "bool", def: "false" },
+    { k: "enforce-whitelist", label: "Enforce whitelist", type: "bool", def: "false" },
+    { k: "allow-flight", label: "Allow flight", type: "bool", def: "false" },
+    { k: "force-gamemode", label: "Force game mode on join", type: "bool", def: "false" },
+    { k: "player-idle-timeout", label: "Idle kick (minutes, 0 = off)", type: "int", def: "0" },
+    { k: "op-permission-level", label: "OP permission level (0–4)", type: "int", def: "4" },
+    { k: "function-permission-level", label: "Function permission level (1–4)", type: "int", def: "2" },
+    { k: "enforce-secure-profile", label: "Require signed chat", type: "bool", def: "true" },
+    { k: "hide-online-players", label: "Hide online players list", type: "bool", def: "false" },
+  ] },
+  { group: "Mobs & view", fields: [
+    { k: "spawn-monsters", label: "Spawn monsters", type: "bool", def: "true" },
+    { k: "spawn-animals", label: "Spawn animals", type: "bool", def: "true" },
+    { k: "spawn-npcs", label: "Spawn villagers (NPCs)", type: "bool", def: "true" },
+    { k: "view-distance", label: "View distance (chunks)", type: "int", def: "10" },
+    { k: "simulation-distance", label: "Simulation distance (chunks)", type: "int", def: "10" },
+    { k: "entity-broadcast-range-percentage", label: "Entity broadcast range %", type: "int", def: "100" },
+  ] },
+  { group: "Server & network", fields: [
+    { k: "motd", label: "MOTD (server-list message)", type: "str", def: "A Minecraft Server" },
+    { k: "server-port", label: "Port", type: "int", def: "25565" },
+    { k: "server-ip", label: "Bind IP (blank = all)", type: "str", def: "" },
+    { k: "enable-command-block", label: "Enable command blocks", type: "bool", def: "false" },
+    { k: "max-tick-time", label: "Max tick time (ms, -1 = off)", type: "int", def: "60000" },
+    { k: "network-compression-threshold", label: "Network compression threshold", type: "int", def: "256" },
+    { k: "enable-status", label: "Answer status pings", type: "bool", def: "true" },
+    { k: "prevent-proxy-connections", label: "Prevent proxy connections", type: "bool", def: "false" },
+    { k: "use-native-transport", label: "Native transport (Linux epoll)", type: "bool", def: "true" },
+    { k: "sync-chunk-writes", label: "Sync chunk writes", type: "bool", def: "true" },
+    { k: "enable-query", label: "Enable GameSpy query", type: "bool", def: "false" },
+    { k: "query.port", label: "Query port", type: "int", def: "25565" },
+    { k: "enable-rcon", label: "Enable RCON (remote console)", type: "bool", def: "false" },
+    { k: "rcon.port", label: "RCON port", type: "int", def: "25575" },
+    { k: "rcon.password", label: "RCON password", type: "str", def: "" },
+    { k: "broadcast-console-to-ops", label: "Broadcast console to ops", type: "bool", def: "true" },
+    { k: "broadcast-rcon-to-ops", label: "Broadcast RCON to ops", type: "bool", def: "true" },
+  ] },
+  { group: "Resource pack", fields: [
+    { k: "resource-pack", label: "Resource-pack URL", type: "str", def: "" },
+    { k: "resource-pack-prompt", label: "Resource-pack prompt", type: "str", def: "" },
+    { k: "resource-pack-sha1", label: "Resource-pack SHA-1", type: "str", def: "" },
+    { k: "require-resource-pack", label: "Require resource pack", type: "bool", def: "false" },
+  ] },
+];
+
+function ServerSettings({ id, api, running }) {
+  const [vals, setVals]   = tS(null);
+  const [extra, setExtra] = tS([]);
+  const [loading, setLoading] = tS(true);
+  const [saving, setSaving]   = tS(false);
+  const [q, setQ] = tS("");
+
+  async function load() {
+    setLoading(true);
+    const r = await api.getServerProperties(id).catch(() => null);
+    const props = (r && r.props) || {};
+    const merged = {}, known = {};
+    SERVER_PROP_SCHEMA.forEach(g => g.fields.forEach(f => { known[f.k] = 1; merged[f.k] = props[f.k] != null ? props[f.k] : f.def; }));
+    const ex = Object.keys(props).filter(k => !known[k]).sort().map(k => ({ k, v: props[k] }));
+    setVals(merged); setExtra(ex); setLoading(false);
+  }
+  tE(() => { load(); }, [id]);
+  const set = (k, v) => setVals(s => ({ ...s, [k]: v }));
+
+  async function save() {
+    setSaving(true);
+    const out = { ...vals };
+    extra.forEach(e => { out[e.k] = e.v; });
+    const r = await api.saveServerProperties(id, out).catch(e => ({ ok: false, error: String(e) }));
+    setSaving(false);
+    if (r && r.ok) window.toast({ tone: "success", icon: "check", title: "Settings saved", body: running ? "Restart the server to apply." : "server.properties updated" });
+    else window.toast({ tone: "danger", icon: "alert", title: "Couldn't save", body: (r && r.error) || "" });
+  }
+
+  if (loading || !vals) return React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+    React.createElement("div", { style: { display: "grid", placeItems: "center", padding: 40 } }, React.createElement(Spinner, null)));
+
+  const ql = q.trim().toLowerCase();
+  const match = f => !ql || f.k.toLowerCase().includes(ql) || f.label.toLowerCase().includes(ql);
+  const control = f => {
+    const v = vals[f.k];
+    if (f.type === "bool") return React.createElement(Toggle, { checked: v === "true", onChange: () => set(f.k, v === "true" ? "false" : "true"), size: "sm" });
+    if (f.type === "enum") {
+      const opts = f.opts.slice(); if (v && opts.indexOf(v) < 0) opts.push(v);
+      return React.createElement(Select, { value: v, onChange: x => set(f.k, x), size: "sm", width: 210, options: opts.map(o => ({ value: o, label: o })) });
+    }
+    return React.createElement(TextInput, { value: String(v == null ? "" : v), mono: f.type === "int", size: "sm", style: { width: f.type === "int" ? 130 : 240 },
+      onChange: x => set(f.k, f.type === "int" ? String(x).replace(/[^0-9-]/g, "") : x) });
+  };
+  const rowOf = (k, label, mono, ctl) => React.createElement("div", { key: k, style: { display: "flex", alignItems: "center", gap: 12, padding: "7px 0", borderBottom: "1px solid var(--border-faint)" } },
+    React.createElement("div", { style: { flex: 1, minWidth: 0 } },
+      React.createElement("div", { style: { fontSize: 12.5, color: "var(--text)" } }, label),
+      React.createElement("div", { className: "mono", style: { fontSize: 10.5, color: "var(--text-faint)" } }, k)),
+    React.createElement("div", { style: { flexShrink: 0 } }, ctl));
+
+  const exShown = extra.filter(e => !ql || e.k.toLowerCase().includes(ql));
+
+  return React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 9, marginBottom: 12, flexWrap: "wrap" } },
+      React.createElement(Icon, { name: "sliders", size: 16, style: { color: "var(--acc-2)" } }),
+      React.createElement("h3", { style: { margin: 0, fontSize: 14.5, fontWeight: 680 } }, "Server settings"),
+      React.createElement("span", { className: "mono", style: { fontSize: 11, color: "var(--text-faint)" } }, "server.properties"),
+      React.createElement("div", { style: { flex: 1 } }),
+      React.createElement(TextInput, { value: q, onChange: setQ, placeholder: "Filter settings…", icon: "search", size: "sm", style: { width: 190 } }),
+      React.createElement(Btn, { variant: "ghost", size: "sm", icon: "refresh", onClick: load }, "Reload"),
+      React.createElement(Btn, { variant: "primary", size: "sm", icon: saving ? "loader" : "check", iconSpin: saving, disabled: saving, onClick: save }, saving ? "Saving…" : "Save")),
+    running && React.createElement("div", { style: { fontSize: 11.5, color: "var(--warn, #e6b450)", marginBottom: 10 } }, "Server is running — changes apply after a restart."),
+    React.createElement("div", { style: { maxHeight: 540, overflowY: "auto", paddingRight: 4 } },
+      SERVER_PROP_SCHEMA.map(g => {
+        const fs = g.fields.filter(match);
+        if (!fs.length) return null;
+        return React.createElement("div", { key: g.group, style: { marginBottom: 14 } },
+          React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-faint)", margin: "6px 0 4px" } }, g.group),
+          fs.map(f => rowOf(f.k, f.label, false, control(f))));
+      }),
+      exShown.length > 0 && React.createElement("div", { style: { marginBottom: 8 } },
+        React.createElement("div", { style: { fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase", color: "var(--text-faint)", margin: "6px 0 4px" } }, "Other / advanced"),
+        exShown.map(e => rowOf(e.k, e.k, true,
+          React.createElement(TextInput, { value: String(e.v == null ? "" : e.v), size: "sm", style: { width: 240 },
+            onChange: x => setExtra(list => list.map(it => it.k === e.k ? { ...it, v: x } : it)) }))))));
+}
+
+function HostServerTab({ instance, api, hasBridge }) {
+  const id = instance.id;
+  const [srv, setSrv]   = tS(null);
+  const [loading, setLoading] = tS(true);
+  const [lines, setLines] = tS([]);
+  const [state, setState] = tS("stopped");
+  const [ram, setRam]   = tS(4096);
+  const [port, setPort] = tS(25565);
+  const [eula, setEula] = tS(false);
+  const [busy, setBusy] = tS(false);
+  const [setupMsg, setSetupMsg] = tS("");
+  const [delArm, setDelArm] = tS(false);
+  const [view, setView] = tS("console");   // console | settings
+  const saveTimer = tRf(null);
+  const sysRam = useSysRamMb(api);
+  const ramCap = maxRamMb(sysRam);
+
+  async function reload() {
+    if (!hasBridge || !api.getHostedServer) { setLoading(false); return; }
+    const s = await api.getHostedServer(id).catch(() => null);
+    if (s) { setSrv(s); setState(s.state || "stopped"); setRam(s.ramMb || 4096); setPort(s.port || 25565); setEula(!!s.eulaAccepted); }
+    setLoading(false);
+  }
+  tE(() => { setLoading(true); reload(); }, [id]);
+
+  // Poll the console buffer (like the Logs screen) while mounted.
+  tE(() => {
+    if (!hasBridge || !api.getServerConsole) return;
+    let alive = true;
+    async function tick() {
+      const c = await api.getServerConsole(id, 800).catch(() => null);
+      if (!alive || !c) return;
+      setLines(c.lines || []);
+      setState(c.state || "stopped");
+    }
+    tick();
+    const iv = setInterval(tick, 1200);
+    return () => { alive = false; clearInterval(iv); };
+  }, [id, hasBridge]);
+
+  // Live push events for state + setup progress.
+  tE(() => {
+    function onState(e) { const d = e.detail || {}; if (d.id === id) setState(d.state || "stopped"); }
+    function onProg(e)  { const d = e.detail || {}; if (d.id === id) setSetupMsg(d.message || ""); }
+    function onDone(e)  { const d = e.detail || {}; if (d.id === id) { setBusy(false); setSetupMsg(""); reload(); window.toast({ tone: "success", icon: "check", title: "Server ready" }); } }
+    function onErr(e)   { const d = e.detail || {}; if (d.id === id) { setBusy(false); setSetupMsg(""); window.toast({ tone: "danger", icon: "alert", title: "Setup failed", body: d.error || "" }); } }
+    window.addEventListener("cryo:serverState", onState);
+    window.addEventListener("cryo:serverSetupProgress", onProg);
+    window.addEventListener("cryo:serverSetupDone", onDone);
+    window.addEventListener("cryo:serverSetupError", onErr);
+    return () => {
+      window.removeEventListener("cryo:serverState", onState);
+      window.removeEventListener("cryo:serverSetupProgress", onProg);
+      window.removeEventListener("cryo:serverSetupDone", onDone);
+      window.removeEventListener("cryo:serverSetupError", onErr);
+    };
+  }, [id]);
+
+  const running  = state === "running" || state === "starting" || state === "stopping";
+  const setupDone = srv && srv.setupDone;
+
+  function scheduleSave(r) { clearTimeout(saveTimer.current); saveTimer.current = setTimeout(() => api.saveServerSettings(id, r, 0).catch(() => {}), 500); }
+  async function setup()  { setBusy(true); setSetupMsg("Starting setup…"); const r = await api.createServer(id).catch(e => ({ ok: false, error: String(e) })); if (r && !r.ok) { setBusy(false); window.toast({ tone: "danger", icon: "alert", title: "Couldn't start setup", body: r.error || "" }); } }
+  async function start()  { const r = await api.startServer(id).catch(e => ({ ok: false, error: String(e) })); if (r && !r.ok) { if (r.needEula) window.toast({ tone: "warn", icon: "info", title: "Accept the Minecraft EULA first" }); else window.toast({ tone: "danger", icon: "alert", title: "Couldn't start", body: r.error || "" }); } }
+  async function stop()   { await api.stopServer(id).catch(() => {}); }
+  async function accept() { await api.acceptServerEula(id).catch(() => {}); setEula(true); }
+  function onDelete()     { if (!delArm) { setDelArm(true); setTimeout(() => setDelArm(false), 3000); return; } setDelArm(false); api.deleteServer(id).then(r => { if (r && r.ok) { setSrv(p => p ? { ...p, exists: false, setupDone: false } : p); setLines([]); setState("stopped"); window.toast({ tone: "neutral", icon: "trash", title: "Server deleted" }); } else window.toast({ tone: "danger", icon: "alert", title: "Couldn't delete", body: (r && r.error) || "" }); }).catch(() => {}); }
+
+  if (!hasBridge) return React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+    React.createElement(EmptyState, { icon: "server", title: "Desktop only", body: "Server hosting runs in the desktop app." }));
+  if (loading) return React.createElement("div", { style: { display: "grid", placeItems: "center", padding: 60 } }, React.createElement(Spinner, null));
+
+  const stateTone = state === "running" ? "success" : state === "crashed" ? "error" : (state === "starting" || state === "stopping" || state === "installing") ? "warn" : "neutral";
+  const stateLabel = { stopped: "Stopped", installing: "Installing…", starting: "Starting…", running: "Running", stopping: "Stopping…", crashed: "Crashed" }[state] || state;
+
+  // ── Not supported (Forge/Quilt for now) ──
+  if (srv && srv.supported === false) return React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+      React.createElement(Icon, { name: "server", size: 18, style: { color: "var(--acc-2)" } }),
+      React.createElement("h3", { style: { margin: 0, fontSize: 15, fontWeight: 680 } }, "Host a server")),
+    React.createElement("p", { style: { margin: "10px 0 0", fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55 } },
+      (srv.loader || "This loader") + " server hosting is coming soon. Cryo can currently host NeoForge, Fabric and Vanilla packs."));
+
+  const consoleCard = React.createElement(ServerConsole, {
+    lines, running, busy, setupMsg,
+    onCommand: c => api.sendServerCommand(id, c).catch(() => {}),
+  });
+
+  // ── Not set up yet ──
+  if (!setupDone) return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 16 } },
+    React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+        React.createElement(Icon, { name: "server", size: 18, style: { color: "var(--acc-2)" } }),
+        React.createElement("h3", { style: { margin: 0, fontSize: 15, fontWeight: 680 } }, "Host a server"),
+        busy && React.createElement(Badge, { tone: "warn", size: "sm" }, "Setting up…")),
+      React.createElement("p", { style: { margin: "10px 0 14px", fontSize: 13, color: "var(--text-dim)", lineHeight: 1.55 } },
+        "Create a dedicated server for ", React.createElement("strong", null, instance.name),
+        " — Cryo copies this pack's mods + config and installs the matching ",
+        React.createElement("strong", null, (instance.loader || "Vanilla") + " " + (instance.mc || "")),
+        " server, with its own console."),
+      React.createElement(Btn, { variant: "primary", icon: busy ? "loader" : "server", iconSpin: busy, disabled: busy, onClick: setup },
+        busy ? "Setting up…" : "Set up server")),
+    (busy || lines.length > 0) && consoleCard);
+
+  // ── Set up — controls + console ──
+  const controls = React.createElement(Card, { style: { borderRadius: "var(--r-xl)" } },
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+      React.createElement(Icon, { name: "server", size: 18, style: { color: "var(--acc-2)" } }),
+      React.createElement("h3", { style: { margin: 0, fontSize: 15, fontWeight: 680 } }, "Server"),
+      React.createElement(Badge, { tone: stateTone, size: "sm", dot: state === "running" }, stateLabel),
+      React.createElement("div", { style: { marginLeft: "auto", display: "flex", gap: 8 } },
+        (state === "running" || state === "starting")
+          ? React.createElement(Btn, { variant: "outline", size: "sm", icon: "power", onClick: stop, disabled: state === "stopping" }, state === "stopping" ? "Stopping…" : "Stop")
+          : React.createElement(Btn, { variant: "primary", size: "sm", icon: "play", onClick: start, disabled: !eula || state === "stopping" }, "Start"),
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "folderOpen", onClick: () => api.openServerFolder(id).catch(() => {}) }, "Folder"),
+        React.createElement(Btn, { variant: delArm ? "danger" : "ghost", size: "sm", icon: "trash", disabled: running, onClick: onDelete }, delArm ? "Confirm" : ""))),
+    React.createElement("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8, fontSize: 12, color: "var(--text-faint)" } },
+      React.createElement("span", null, (srv.loader || "Vanilla") + " " + (srv.loaderVer || "")),
+      React.createElement("span", null, "· MC " + (srv.mc || "")),
+      React.createElement("span", null, "· port " + port)),
+    !eula && React.createElement("div", { style: { marginTop: 14, padding: "11px 13px", borderRadius: "var(--r-md)", background: "var(--warn-dim, rgba(230,180,80,.12))", border: "1px solid color-mix(in oklab, var(--warn, #e6b450) 30%, transparent)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" } },
+      React.createElement(Icon, { name: "alert", size: 15, style: { color: "var(--warn, #e6b450)", flexShrink: 0 } }),
+      React.createElement("span", { style: { fontSize: 12.5, color: "var(--text)", flex: 1, minWidth: 180 } },
+        "You must accept the ",
+        React.createElement("a", { href: "#", onClick: e => { e.preventDefault(); api.openUrl && api.openUrl("https://aka.ms/MinecraftEULA"); }, style: { color: "var(--acc-text)" } }, "Minecraft EULA"),
+        " before starting."),
+      React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", onClick: accept }, "Accept EULA")),
+    React.createElement("div", { style: { marginTop: 16, opacity: running ? 0.5 : 1, pointerEvents: running ? "none" : "auto" } },
+      React.createElement("div", { style: { fontSize: 12, fontWeight: 600, color: "var(--text-dim)", marginBottom: 6 } }, "Server RAM — " + (ram / 1024).toFixed(1) + " GB (JVM heap)"),
+      React.createElement(Slider, { value: Math.min(ram, ramCap), min: 1024, max: ramCap, step: 512, onChange: v => { setRam(v); scheduleSave(v); }, format: v => (v / 1024).toFixed(1) + "G" })));
+
+  return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
+    controls,
+    React.createElement(Segmented, { value: view, onChange: setView, size: "sm",
+      options: [{ value: "console", label: "Console", icon: "terminal" }, { value: "settings", label: "Settings", icon: "sliders" }] }),
+    view === "settings" ? React.createElement(ServerSettings, { id, api, running }) : consoleCard);
+}
+
+window.CryoInstanceTabs = { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard, HealthCard, ScreenshotsTab, HostServerTab };

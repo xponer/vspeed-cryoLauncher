@@ -27,7 +27,7 @@ namespace VSpeedLauncher.Core;
 /// All bridge calls are handled on a background thread; responses are posted
 /// back to the WebView2 via <c>Dispatcher.Invoke</c>.
 /// </summary>
-public sealed class CryoBridge
+public sealed partial class CryoBridge
 {
     private readonly InstanceManager _manager;
     private readonly ConfigStore     _config;
@@ -372,6 +372,19 @@ public sealed class CryoBridge
             "launchWithEngine"    => LaunchWithEngine(args.Str("id"), args.Str("joinServer")),
             "getEngineStatus"     => GetEngineStatus(args.Str("id")),
             "setEngineSource"     => SetEngineSource(args.Str("id"), args.Str("source")),
+            // ── Server hosting (run a dedicated server for a pack) ──────────────────
+            "getHostedServer"     => GetHostedServer(args.Str("id")),
+            "createServer"        => CreateServer(args.Str("id")),
+            "startServer"         => StartServer(args.Str("id")),
+            "stopServer"          => StopServer(args.Str("id")),
+            "sendServerCommand"   => SendServerCommand(args.Str("id"), args.Str("cmd")),
+            "getServerConsole"    => GetServerConsole(args.Str("id"), args.Int("n", 800)),
+            "saveServerSettings"  => SaveServerSettings(args.Str("id"), args.Int("ramMb", 0), args.Int("port", 0)),
+            "getServerProperties" => GetServerProperties(args.Str("id")),
+            "saveServerProperties"=> SaveServerProperties(args.Str("id"), args["props"]),
+            "acceptServerEula"    => AcceptServerEula(args.Str("id")),
+            "deleteServer"        => DeleteServer(args.Str("id")),
+            "openServerFolder"    => OpenServerFolder(args.Str("id")),
             _ => throw new InvalidOperationException($"Unknown method: {method}"),
         };
 #pragma warning restore CS8619

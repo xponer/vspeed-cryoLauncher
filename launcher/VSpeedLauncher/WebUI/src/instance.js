@@ -8,7 +8,7 @@ var { useApp } = window.CryoStore;
 function InstanceDetail({ id, initialTab, autoLaunch }) {
   const { api, hasBridge, t, fmt, navigate } = useApp();
   const { OverviewTab } = window.CryoOverview;
-  const { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard, HealthCard, ScreenshotsTab } = window.CryoInstanceTabs;
+  const { PerformanceTab, ModsTab, SettingsTab, WorldsTab, ModpackIOCard, ServersTab, ProfileApplyCard, ModpackUpdateCard, HealthCard, ScreenshotsTab, HostServerTab } = window.CryoInstanceTabs;
   const { InstanceModBrowser } = window.CryoModrinth;
 
   const [state, setState] = dS("loading");
@@ -208,6 +208,7 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
     { value: "addmods",      label: "Add mods",            icon: "download" },
     { value: "worlds",       label: "Worlds",              icon: "globe" },
     { value: "servers",      label: "Servers",             icon: "globe" },
+    { value: "host",         label: "Host server",         icon: "server" },
     { value: "screenshots",  label: "Screenshots",         icon: "image" },
     { value: "settings",     label: t("tab.settings"),     icon: "sliders" },
   ];
@@ -267,6 +268,7 @@ function InstanceDetail({ id, initialTab, autoLaunch }) {
       tab === "addmods"     && React.createElement(InstanceModBrowser, { instance, api, hasBridge, onChanged: refreshMods }),
       tab === "worlds"      && React.createElement(WorldsTab, { instance, api, hasBridge, fmt }),
       tab === "servers"     && React.createElement(ServersTab, { instance, api, hasBridge }),
+      tab === "host"        && React.createElement(HostServerTab, { instance, api, hasBridge }),
       tab === "screenshots" && React.createElement(ScreenshotsTab, { instance, api, hasBridge }),
       tab === "settings"    && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 18 } },
         React.createElement(ProfileApplyCard, { instance, api, hasBridge }),
