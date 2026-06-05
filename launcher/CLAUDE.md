@@ -111,6 +111,37 @@
 > Velopack release that testers auto-update to) or **unreleased** (only in the
 > local working tree / dev build).
 
+### v1.0.15 — released (GitHub) — smarter AI assistant + accurate dependency check
+- **AI no longer gives generic bad advice.** Rewrote `AiSystemPrompt` into a real modded-MC
+  engineer: knows a healthy pack prints hundreds of benign WARN/exception lines, concludes
+  "broken" ONLY on real crash evidence, NEVER recommends disabling a mod off a single warning,
+  diagnoses from the crash CAUSE and quotes evidence, and treats the dep-check/conflict-scan output
+  skeptically. Verified live: on a clean-but-stopped pack it now answers "your game did NOT crash,
+  no mod changes needed" instead of telling the user to disable a mod.
+- **Context now carries the runtime state + a VERDICT** (`BuildAiContext`): loader/MC, launcher
+  state (running/stopped/crashed), an explicit verdict ("the game is RUNNING — don't suggest
+  removing mods" / "CRASHED — find the cause"), and a STALE-crash-report flag (age in min/h, "from
+  a previous session — probably unrelated"). This is what stops false alarms off old logs.
+- **Default model 8b → `meta/llama-3.3-70b-instruct`** (+ `MigrateAiModel` upgrades testers still on
+  the old weak default; deliberate non-default picks preserved; migrations now persisted on load).
+- **Nemotron / reasoning models now answer** (was a blank reply). The stream parser only read
+  `delta.content`; reasoning models stream the answer in `reasoning_content` and can burn the token
+  budget thinking. Fix: send `detailed thinking off` for `*nemotron*`, raise `max_tokens` 1024→2048,
+  read/stream `reasoning_content`, and promote it to the answer if no content arrives (stream + non-stream).
+- **Live "Thinking" indicator** — the moment you send, a spinner + "Thinking…" shows (and streams the
+  model's live chain-of-thought as a dimmed preview), so it never looks frozen during a slow reply.
+  `<think>…</think>` blocks are stripped from the final answer.
+- **One-click web search + fixes** — new assistant actions: `webSearch` (opens a precise Google query
+  for an unknown error), `findMod` (in-app Modrinth search/install), `openUrl` (trusted modding
+  domains only — the AI sees log text, so untrusted links are blocked). The prompt prefers webSearch
+  over guessing when unsure.
+- **Dependency check stops false "missing" reports** — `AnalyzeModGraph` now counts mod ids bundled
+  inside other jars via **JarJar / nested jars** (`META-INF/jarjar` + `META-INF/jars`), not just
+  top-level jars, so embedded libraries are correctly seen as present. Added `fml` to the
+  always-present ignore list. (`ReadModIds` refactored into `ReadModIdsFromZip` + `CollectNestedModIds`.)
+- All build clean (0/0); AI behaviour, Nemotron reply, and the Thinking indicator verified live via
+  computer-use.
+
 ### v1.0.14 — released (GitHub) — host a dedicated server for any pack
 - **Host server tab** (instance → "Host server") — run a real dedicated Minecraft server for a
   modpack, set up in one click from the pack's OWN mods + config. New `Core/CryoBridge.Servers.cs`

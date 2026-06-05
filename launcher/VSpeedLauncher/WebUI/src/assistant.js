@@ -81,7 +81,12 @@ function markdownToHtml(raw) {
 function parseAssistant(raw) {
   const actions = [];
   const lines = [];
-  (raw || "").split(/\r?\n/).forEach(line => {
+  // Reasoning models (Nemotron / R1 / QwQ) may wrap chain-of-thought in <think>…</think>.
+  // Hide it: drop completed blocks, and while still streaming hide an unclosed one.
+  const cleaned = String(raw || "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/<think>[\s\S]*$/i, "");
+  cleaned.split(/\r?\n/).forEach(line => {
     const m = line.match(/^\s*@@ACTION\s+(\{.*\})\s*$/);
     if (m) {
       try { const a = JSON.parse(m[1]); if (a && a.type) { actions.push(a); return; } } catch (e) {}
@@ -92,7 +97,15 @@ function parseAssistant(raw) {
   return { text: lines.join("\n").trim(), actions };
 }
 
-const ACTION_ICON = { disableMod: "package", enableMod: "package", rebuildCache: "database", setRam: "cpu", openCrashReport: "alert", openModsFolder: "folder" };
+const ACTION_ICON = { disableMod: "package", enableMod: "package", rebuildCache: "database", setRam: "cpu", openCrashReport: "alert", openModsFolder: "folder", webSearch: "search", findMod: "download", openUrl: "globe" };
+
+// Only let the assistant open links on well-known modding domains — its input
+// includes log text, so an injected URL must never be openable blindly.
+const AI_URL_ALLOW = ["curseforge.com", "modrinth.com", "minecraft.wiki", "fabricmc.net", "neoforged.net", "docs.neoforged.net", "files.minecraftforge.net", "github.com", "githubusercontent.com", "google.com", "prismlauncher.org"];
+function aiUrlAllowed(url) {
+  try { const h = new URL(url).hostname.toLowerCase(); return /^https:$/i.test(new URL(url).protocol) && AI_URL_ALLOW.some(d => h === d || h.endsWith("." + d)); }
+  catch { return false; }
+}
 
 function ActionChip({ action, status, onApply }) {
   const done = status === "ok";
@@ -105,6 +118,24 @@ function ActionChip({ action, status, onApply }) {
       ? React.createElement("span", { style: { display: "flex", alignItems: "center", gap: 5, fontSize: 12, fontWeight: 700, color: "var(--success)" } }, React.createElement(Icon, { name: "check", size: 14 }), "Applied")
       : React.createElement(Btn, { variant: failed ? "outline" : "primary", size: "sm", disabled: running, iconSpin: running, icon: running ? "refresh" : null, onClick: onApply }, failed ? "Retry" : "Apply"),
   );
+}
+
+function ThinkingDots() {
+  return React.createElement("span", { style: { display: "inline-flex", gap: 3, alignItems: "center", marginLeft: 3 } },
+    [0, 1, 2].map(i => React.createElement("span", { key: i, style: { width: 5, height: 5, borderRadius: "50%", background: "var(--acc-2)", display: "inline-block", animation: "blink 1.2s " + (i * 0.2) + "s ease-in-out infinite" } })));
+}
+
+// Shown while the assistant is working but hasn't produced a visible answer yet.
+// For reasoning models (Nemotron etc.) it streams the live chain-of-thought so the
+// user can SEE it's doing something instead of staring at a frozen blank bubble.
+function ThinkingView({ think }) {
+  const tail = think ? String(think).replace(/\s+/g, " ").trim() : "";
+  return React.createElement("div", null,
+    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "var(--text-dim)" } },
+      React.createElement(Icon, { name: "loader", size: 13, spin: true, style: { color: "var(--acc-2)" } }),
+      React.createElement("span", null, "Thinking"),
+      !tail && React.createElement(ThinkingDots, null)),
+    tail && React.createElement("div", { style: { marginTop: 7, fontSize: 11.5, fontStyle: "italic", color: "var(--text-faint)", lineHeight: 1.5, maxHeight: 64, overflow: "hidden", whiteSpace: "pre-wrap" } }, "…" + tail.slice(-280)));
 }
 
 function MsgRow({ msg, msgIdx, applied, onApply }) {
@@ -129,9 +160,11 @@ function MsgRow({ msg, msgIdx, applied, onApply }) {
         style: { padding: "12px 16px", borderRadius: "4px 14px 14px 14px", background: "var(--panel-2)", border: "1px solid var(--border)" },
       },
         msg.streaming
-          ? React.createElement("div", { className: "md-body", style: { whiteSpace: "pre-wrap", lineHeight: 1.65 } },
-              text,
-              React.createElement("span", { className: "md-cursor", style: { fontSize: 13, marginLeft: 2 } }, "▍"))
+          ? (text
+              ? React.createElement("div", { className: "md-body", style: { whiteSpace: "pre-wrap", lineHeight: 1.65 } },
+                  text,
+                  React.createElement("span", { className: "md-cursor", style: { fontSize: 13, marginLeft: 2 } }, "▍"))
+              : React.createElement(ThinkingView, { think: msg.think }))   // no answer yet → show it's working
           : React.createElement("div", { className: "md-body", dangerouslySetInnerHTML: { __html: html || "" } }),
       ),
       actions.map((a, i) => React.createElement(ActionChip, { key: i, action: a, status: applied[msgIdx + ":" + i], onApply: () => onApply(a, msgIdx + ":" + i) })),
@@ -158,12 +191,16 @@ function AssistantScreen() {
   aiE(() => {
     function onChunk(e) {
       const d = e.detail || {}; if (d.streamId !== streamRef.current) return;
-      setMessages(m => { const c = m.slice(); for (let i = c.length - 1; i >= 0; i--) { if (c[i].streaming) { c[i] = { ...c[i], content: (c[i].content || "") + (d.delta || "") }; break; } } return c; });
+      setMessages(m => { const c = m.slice(); for (let i = c.length - 1; i >= 0; i--) { if (c[i].streaming) {
+        if (d.reasoning) c[i] = { ...c[i], think: (c[i].think || "") + (d.delta || "") };   // live chain-of-thought
+        else c[i] = { ...c[i], content: (c[i].content || "") + (d.delta || "") };
+        break; } } return c; });
     }
     function onDone(e) {
       const d = e.detail || {}; if (d.streamId !== streamRef.current) return;
       streamRef.current = null; setBusy(false);
-      setMessages(m => m.map(x => x.streaming ? { ...x, streaming: false, content: x.content || "(empty reply)" } : x));
+      // If the model only produced reasoning (no content), promote it to the answer.
+      setMessages(m => m.map(x => x.streaming ? { ...x, streaming: false, content: x.content || x.think || "(empty reply)", think: "" } : x));
     }
     function onErr(e) {
       const d = e.detail || {}; if (d.streamId !== streamRef.current) return;
@@ -238,12 +275,31 @@ function AssistantScreen() {
         case "setRam":          await api.saveInstanceCfg(instId, { ramMax: Math.round(Number(args.gb) * 1024) }); break;
         case "openCrashReport": await api.openCrashReport(instId); break;
         case "openModsFolder":  await api.openFolder(instId); break;
+        case "webSearch": {
+          const query = String(args.query || "").trim();
+          if (!query) throw new Error("Empty search query");
+          await api.openUrl("https://www.google.com/search?q=" + encodeURIComponent(query));
+          break;
+        }
+        case "findMod": {
+          const query = String(args.query || "").trim();
+          if (!query) throw new Error("Empty mod query");
+          window.__cryoModSearch = query;
+          navigate("browse");
+          break;
+        }
+        case "openUrl": {
+          const url = String(args.url || "").trim();
+          if (!aiUrlAllowed(url)) throw new Error("Blocked untrusted link");
+          await api.openUrl(url);
+          break;
+        }
         default: throw new Error("Unknown action: " + action.type);
       }
       setApplied(a => ({ ...a, [key]: "ok" }));
       window.toast({ tone: "success", icon: "check", title: "Applied", body: action.label || action.type });
-      // Save to AI memory — associate with the last user question + this fix
-      if (instId && api.saveAiMemory) {
+      // Save to AI memory — only for real fixes (not search/open navigations).
+      if (["disableMod", "enableMod", "rebuildCache", "setRam"].includes(action.type) && instId && api.saveAiMemory) {
         const userMsgs = messages.filter(m => m.role === "user");
         const problem = userMsgs.length > 0 ? userMsgs[userMsgs.length - 1].content : "";
         api.saveAiMemory(instId, problem.slice(0, 300), action.label || action.type, [action]).catch(() => {});

@@ -35,6 +35,8 @@ public sealed class ConfigStore
             var json = File.ReadAllText(_path);
             Data = JsonSerializer.Deserialize<Config>(json, _opts) ?? Config.Default();
             MigrateInstanceRoots();
+            MigrateAiModel();
+            Save();   // persist migrations so they stick + show in Settings
         }
         catch (Exception e)
         {
@@ -53,6 +55,16 @@ public sealed class ConfigStore
         {
             Logger.Warn($"Config save failed: {e.Message}");
         }
+    }
+
+    /// <summary>Upgrade the AI model for users still on an old weak DEFAULT
+    /// (8b / phi-4-mini) to the stronger 70b — a deliberate non-default choice is
+    /// left untouched. Big quality win for testers who never changed it.</summary>
+    private void MigrateAiModel()
+    {
+        var m = (Data.AiModel ?? "").Trim();
+        if (m.Length == 0 || m == "meta/llama-3.1-8b-instruct" || m == "microsoft/phi-4-mini-instruct")
+            Data.AiModel = "meta/llama-3.3-70b-instruct";
     }
 
     /// <summary>Back-compat for configs written before multi-root support: seed
@@ -109,9 +121,10 @@ public sealed class Config
     public string AiApiKey   { get; set; } = "";
     /// <summary>OpenAI-compatible base. Hosted cloud by default; set to http://localhost:8000 for a local NIM.</summary>
     public string AiBaseUrl  { get; set; } = "https://integrate.api.nvidia.com";
-    // Default to a model that IS available on NVIDIA's free hosted endpoint.
-    // (phi-4-mini is partner/self-host only — use Settings → Assistant to switch.)
-    public string AiModel    { get; set; } = "meta/llama-3.1-8b-instruct";
+    // Default to a STRONG model on NVIDIA's free hosted endpoint — small models
+    // (8b / phi-4-mini) give poor, generic modpack diagnoses. 70b is far better at
+    // reading crash reports without false alarms. Switch in Settings → Assistant.
+    public string AiModel    { get; set; } = "meta/llama-3.3-70b-instruct";
     /// <summary>If true, apply safe proposed fixes without asking. Off = 1-click confirm (default).</summary>
     public bool   AiAutoApply { get; set; } = false;
 

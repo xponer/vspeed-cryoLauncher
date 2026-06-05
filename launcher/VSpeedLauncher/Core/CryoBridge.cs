@@ -1539,21 +1539,35 @@ public sealed partial class CryoBridge
     private static readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(120) };
 
     private const string AiSystemPrompt =
-@"You are Cryo Assistant, an expert built into the Cryo Minecraft modpack launcher (NeoForge/Forge/Fabric, Prism-based).
-Help the user diagnose mod conflicts, crashes, launch failures, performance issues, and general modpack questions. Be concise and concrete; prefer short paragraphs and bullet points.
+@"You are Cryo Assistant, a senior Minecraft modpack engineer built into the Cryo launcher. You know NeoForge, Forge, Fabric and Quilt deeply. Be concise, concrete and evidence-based — short paragraphs and bullets.
 
-When a fix can be performed by the launcher, propose it on its own line beginning with @@ACTION followed by compact JSON, e.g.:
-@@ACTION {""type"":""disableMod"",""label"":""Disable JEI (duplicate)"",""args"":{""file"":""jei-1.21.1.jar""}}
+# How modded Minecraft REALLY behaves (read this before judging anything)
+- A normal, healthy modded pack prints HUNDREDS of scary-looking but HARMLESS lines on every boot: mixin ""could not find""/""already applied"" notices, ""Mod X is missing a pack.mcmeta"", missing-OPTIONAL-dependency notices, datapack/recipe/tag warnings, deprecation warnings, registry remap/""Unknown registry"" messages, ""failed to load … falling back"", and full Java stack traces the game catches and continues past. This is NOISE, not failure.
+- If the pack REACHED THE MAIN MENU or is currently RUNNING, it is WORKING. Warnings — and even caught exceptions — in a running pack are almost never worth acting on.
+- Conclude the pack is broken ONLY with hard evidence of a real failure: an actual crash report (crash-reports/*.txt), `Exception in thread ""main""`, a JVM fatal error (hs_err / ""A fatal error has been detected""), a mixin that FAILED to apply (""mixin apply failed"" / ""…FAILED injection""), ""Failed to start the minecraft server"", or the launcher telling you the process exited abnormally during startup. The CONTEXT below states the current state (running / stopped / crashed) and gives a VERDICT — trust it.
 
-Allowed action types and args:
-- disableMod {file}   — disable a mod (use the EXACT file name from the provided mod list)
-- enableMod {file}    — re-enable a disabled mod
-- rebuildCache {}     — rebuild the VSpeed data cache
-- setRam {gb}         — set max RAM in GB (integer, e.g. 10) for the current instance
-- openCrashReport {}  — open the latest crash report
-- openModsFolder {}   — open the instance's mods folder
+# Hard rules (this is exactly what users hate when you get it wrong)
+- NEVER tell the user to disable or remove a mod just because you see a WARN or a stack trace. Recommend disabling a mod ONLY when a crash report clearly names it (the failing mixin's owning mod, the deepest in-mod stack frame, or the crash-report ""Mod File""/""Failure message""/""Failure ID"" fields).
+- If the VERDICT says the game is running/working, SAY SO plainly, do NOT propose mod changes, and just answer the user's actual question.
+- Diagnose a crash from the CAUSE, not the first scary line: read the ""Description"", the last ""Caused by"", the deepest in-mod frame, and the crash-report header fields. Quote the exact line(s) you based your conclusion on.
+- Never invent mod names, file names, versions, links or facts. Use only what's in the context. If evidence is insufficient, say what's missing (e.g. ""attach the crash report"") and ask for it — don't guess.
+- The launcher's own ""Dependency check"" and ""Conflict scan"" are heuristics and are OFTEN WRONG: most dependencies are bundled INSIDE other jars (JarJar / nested jars), so a ""missing"" dependency is usually actually present; duplicate mod-ids are usually harmless library/API splits. Treat their output as a hint to verify in the logs, never as proof.
+- You cannot edit the launcher's source. If you suspect a launcher bug, say so and describe it.
 
-Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an action you can clearly justify from the logs/crash/mods context. NEVER invent file names — only use files present in the context. If unsure, ask a clarifying question instead of guessing. You cannot edit the launcher's own source code; if you suspect a launcher bug, say so clearly and describe it.";
+# One-click actions the launcher can run
+Propose an action on its OWN line: @@ACTION {compact json}, with a one-line plain explanation BEFORE it. Only propose actions you can justify.
+- webSearch {query}    — open a web search. USE THIS for any unfamiliar error: build a precise query with the exact error text + loader + MC version. When you're not certain of the cause, prefer this over guessing a fix.
+- findMod {query}      — search Modrinth inside the launcher (to install a genuinely missing mod/dependency)
+- openUrl {url}        — open a specific trusted page (CurseForge/Modrinth/the wiki/GitHub). Only well-known modding domains.
+- openCrashReport {}   — open the latest crash report
+- openModsFolder {}    — open the mods folder
+- rebuildCache {}      — rebuild the VSpeed data cache
+- setRam {gb}          — set max RAM (integer GB) — ONLY with OutOfMemory / ""Out of memory"" / GC-overhead evidence
+- disableMod {file}    — disable a mod (EXACT file name from the mod list) — ONLY when a crash clearly blames it
+- enableMod {file}     — re-enable a disabled mod
+
+Example for an unknown error:
+@@ACTION {""type"":""webSearch"",""label"":""Search this error"",""args"":{""query"":""NeoForge 1.21.1 java.lang.NoSuchMethodError ExampleMod""}}";
 
     /// <summary>
     /// Calls the configured OpenAI-compatible chat endpoint (NVIDIA hosted by default).
@@ -1563,14 +1577,17 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     {
         var key     = (_config.Data.AiApiKey  ?? "").Trim();
         var baseUrl = (_config.Data.AiBaseUrl ?? "").Trim().TrimEnd('/');
-        var model   = string.IsNullOrWhiteSpace(_config.Data.AiModel) ? "microsoft/phi-4-mini-instruct" : _config.Data.AiModel.Trim();
+        var model   = string.IsNullOrWhiteSpace(_config.Data.AiModel) ? "meta/llama-3.3-70b-instruct" : _config.Data.AiModel.Trim();
         bool isLocal = baseUrl.Contains("localhost") || baseUrl.Contains("127.0.0.1") || baseUrl.Contains("0.0.0.0");
 
         if (string.IsNullOrWhiteSpace(baseUrl)) return new { ok = false, error = "No API base URL configured (Settings → Assistant)." };
         if (string.IsNullOrWhiteSpace(key) && !isLocal)
             return new { ok = false, error = "No NVIDIA API key set. Paste your key in Settings → Assistant." };
 
-        var msgs = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = AiSystemPrompt } };
+        var msgs = new JsonArray();
+        if (model.Contains("nemotron", StringComparison.OrdinalIgnoreCase))
+            msgs.Add(new JsonObject { ["role"] = "system", ["content"] = "detailed thinking off" });
+        msgs.Add(new JsonObject { ["role"] = "system", ["content"] = AiSystemPrompt });
         var ctx = BuildAiContext(args);
         if (!string.IsNullOrEmpty(ctx)) msgs.Add(new JsonObject { ["role"] = "system", ["content"] = ctx });
         if (args["messages"] is JsonArray hist)
@@ -1586,7 +1603,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         {
             ["model"]       = model,
             ["messages"]    = msgs,
-            ["max_tokens"]  = 1024,
+            ["max_tokens"]  = 2048,
             ["temperature"] = 0.2,   // NVIDIA-recommended for phi-4-mini; low = reliable diagnostics
             ["top_p"]       = 0.7,
             ["stream"]      = false,
@@ -1623,7 +1640,10 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             }
 
             var node    = JsonNode.Parse(text);
-            var reply   = node?["choices"]?[0]?["message"]?["content"]?.GetValue<string>() ?? "";
+            var msg     = node?["choices"]?[0]?["message"];
+            var reply   = msg?["content"]?.GetValue<string>() ?? "";
+            if (string.IsNullOrWhiteSpace(reply))   // reasoning models may answer only here
+                reply = msg?["reasoning_content"]?.GetValue<string>() ?? "";
             return new { ok = true, content = reply };
         }
         catch (TaskCanceledException)
@@ -1662,8 +1682,14 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     {
         try
         {
-            var model = string.IsNullOrWhiteSpace(_config.Data.AiModel) ? "microsoft/phi-4-mini-instruct" : _config.Data.AiModel.Trim();
-            var msgs  = new JsonArray { new JsonObject { ["role"] = "system", ["content"] = AiSystemPrompt } };
+            var model = string.IsNullOrWhiteSpace(_config.Data.AiModel) ? "meta/llama-3.3-70b-instruct" : _config.Data.AiModel.Trim();
+            var msgs  = new JsonArray();
+            // Nemotron reasoning models default to verbose chain-of-thought (streamed in a
+            // SEPARATE reasoning channel) and can spend the whole token budget thinking,
+            // leaving the visible reply empty. This directive makes them answer directly.
+            if (model.Contains("nemotron", StringComparison.OrdinalIgnoreCase))
+                msgs.Add(new JsonObject { ["role"] = "system", ["content"] = "detailed thinking off" });
+            msgs.Add(new JsonObject { ["role"] = "system", ["content"] = AiSystemPrompt });
             var ctx   = BuildAiContext(args);
             if (!string.IsNullOrEmpty(ctx)) msgs.Add(new JsonObject { ["role"] = "system", ["content"] = ctx });
             if (args["messages"] is JsonArray hist)
@@ -1677,7 +1703,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
 
             var body = new JsonObject
             {
-                ["model"] = model, ["messages"] = msgs, ["max_tokens"] = 1024,
+                ["model"] = model, ["messages"] = msgs, ["max_tokens"] = 2048,
                 ["temperature"] = 0.2, ["top_p"] = 0.7, ["stream"] = true,
             };
             string chatUrl =
@@ -1709,8 +1735,17 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                 if (data == "[DONE]") break;
                 try
                 {
-                    var delta = JsonNode.Parse(data)?["choices"]?[0]?["delta"]?["content"]?.GetValue<string>();
+                    var d     = JsonNode.Parse(data)?["choices"]?[0]?["delta"];
+                    var delta = d?["content"]?.GetValue<string>();
                     if (!string.IsNullOrEmpty(delta)) Push("aiChunk", new { streamId, delta });
+                    else
+                    {
+                        // Reasoning models stream chain-of-thought here. Push it LIVE (flagged)
+                        // so the UI can show the model is actively thinking — not frozen. The UI
+                        // promotes it to the answer if no real content ever arrives.
+                        var rc = d?["reasoning_content"]?.GetValue<string>();
+                        if (!string.IsNullOrEmpty(rc)) Push("aiChunk", new { streamId, delta = rc, reasoning = true });
+                    }
                 }
                 catch { /* keepalive / non-JSON line */ }
             }
@@ -3477,6 +3512,22 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         var dir = Path.Combine(InstanceDataDir(id), "instances", id, "minecraft");
         sb.AppendLine($"\n# Context for instance \"{id}\" (only use facts from here; do not invent file names)");
 
+        // Runtime state + an explicit verdict — the single most important signal so the
+        // assistant stops calling a perfectly-working pack ""broken"" off a stray warning.
+        try
+        {
+            var meta0 = InstanceMetaReader.Read(id, InstanceDataDir(id));
+            var st    = _manager.FindById(id)?.State.ToString().ToLowerInvariant() ?? "stopped";
+            sb.AppendLine($"Loader: {(string.IsNullOrEmpty(meta0.Loader) ? "Vanilla" : meta0.Loader)} {meta0.LoaderVer}; Minecraft {meta0.Mc}; launcher state: {st}.");
+            if (st is "loading" or "ready" or "waking" or "hibernated")
+                sb.AppendLine("VERDICT: the game is currently RUNNING / launching — it is WORKING. Do NOT suggest disabling or removing mods. Treat warnings and stack traces below as normal modded noise and just answer the user's actual question.");
+            else if (st == "crashed")
+                sb.AppendLine("VERDICT: the launcher reports this instance CRASHED during startup. Find the real cause in the crash report / log tail and name the exact evidence before proposing any fix.");
+            else
+                sb.AppendLine("VERDICT: the game is not currently running. Diagnose a failure ONLY if there is a RECENT crash report or a clear fatal error below; otherwise the warnings are normal — answer the question, don't recommend removing mods.");
+        }
+        catch { /* ignore */ }
+
         // AI Memory — inject past solutions so the AI doesn't repeat itself
         try
         {
@@ -3537,8 +3588,12 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
                                     .OrderByDescending(f => f.LastWriteTime).FirstOrDefault();
                     if (latest != null)
                     {
-                        sb.AppendLine($"\n## Latest crash report — {latest.Name}");
-                        sb.AppendLine(string.Join("\n", File.ReadLines(latest.FullName).Take(90)));
+                        var ageMin  = (DateTime.Now - latest.LastWriteTime).TotalMinutes;
+                        var ageNote = ageMin > 120
+                            ? $" — ⚠ ~{Math.Round(ageMin / 60)}h old; likely from a PREVIOUS session and probably UNRELATED to the current state — do not assume it explains a running game"
+                            : $" — {Math.Round(ageMin)} min old";
+                        sb.AppendLine($"\n## Latest crash report — {latest.Name}{ageNote}");
+                        sb.AppendLine(string.Join("\n", File.ReadLines(latest.FullName).Take(120)));
                     }
                 }
             }
@@ -3674,44 +3729,79 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
     /// </summary>
     private static List<string> ReadModIds(string jarPath)
     {
+        try { using var z = ZipFile.OpenRead(jarPath); return ReadModIdsFromZip(z); }
+        catch { return new List<string>(); }
+    }
+
+    /// <summary>Reads the own modId(s) declared in an open jar archive
+    /// (neoforge/forge mods.toml [[mods]] or fabric.mod.json).</summary>
+    private static List<string> ReadModIdsFromZip(ZipArchive z)
+    {
         var ids = new List<string>();
+        var toml = z.GetEntry("META-INF/neoforge.mods.toml") ?? z.GetEntry("META-INF/mods.toml");
+        if (toml != null)
+        {
+            using var r = new StreamReader(toml.Open());
+            bool inMods = false;
+            string? line;
+            while ((line = r.ReadLine()) != null)
+            {
+                var t = line.TrimStart();
+                if (t.StartsWith("[["))      { inMods = t.StartsWith("[[mods]]", StringComparison.OrdinalIgnoreCase); continue; }
+                if (t.StartsWith("["))       { inMods = false; continue; }
+                if (!inMods) continue;
+                var m = _modIdRe.Match(line);
+                if (m.Success) ids.Add(m.Groups[1].Value);
+            }
+        }
+        else
+        {
+            var fab = z.GetEntry("fabric.mod.json");
+            if (fab != null)
+            {
+                using var r = new StreamReader(fab.Open());
+                var m = _fabricIdRe.Match(r.ReadToEnd());
+                if (m.Success) ids.Add(m.Groups[1].Value);
+            }
+        }
+        return ids;
+    }
+
+    /// <summary>Collects modIds provided by jars BUNDLED inside a mod jar — Forge/
+    /// NeoForge JarJar (META-INF/jarjar/*.jar) and Fabric nested jars
+    /// (META-INF/jars/*.jar). These satisfy dependencies even though they're not
+    /// separate files in mods/, so the dependency check must count them (otherwise
+    /// it falsely reports bundled libraries as "missing").</summary>
+    private static HashSet<string> CollectNestedModIds(string jarPath)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
             using var z = ZipFile.OpenRead(jarPath);
-            var toml = z.GetEntry("META-INF/neoforge.mods.toml") ?? z.GetEntry("META-INF/mods.toml");
-            if (toml != null)
+            foreach (var e in z.Entries)
             {
-                using var r = new StreamReader(toml.Open());
-                bool inMods = false;   // true only while inside a [[mods]] table
-                string? line;
-                while ((line = r.ReadLine()) != null)
+                var n = e.FullName.Replace('\\', '/');
+                if (!n.EndsWith(".jar", StringComparison.OrdinalIgnoreCase)) continue;
+                if (!(n.StartsWith("META-INF/jarjar/", StringComparison.OrdinalIgnoreCase) ||
+                      n.StartsWith("META-INF/jars/", StringComparison.OrdinalIgnoreCase))) continue;
+                try
                 {
-                    var t = line.TrimStart();
-                    if (t.StartsWith("[["))      { inMods = t.StartsWith("[[mods]]", StringComparison.OrdinalIgnoreCase); continue; }
-                    if (t.StartsWith("["))       { inMods = false; continue; }   // any other table ends the [[mods]] block
-                    if (!inMods) continue;
-                    var m = _modIdRe.Match(line);
-                    if (m.Success) ids.Add(m.Groups[1].Value);
+                    using var ms = new MemoryStream();
+                    using (var es = e.Open()) es.CopyTo(ms);
+                    ms.Position = 0;
+                    using var nz = new ZipArchive(ms, ZipArchiveMode.Read);
+                    foreach (var id in ReadModIdsFromZip(nz)) set.Add(id);
                 }
-            }
-            else
-            {
-                var fab = z.GetEntry("fabric.mod.json");
-                if (fab != null)
-                {
-                    using var r = new StreamReader(fab.Open());
-                    var m = _fabricIdRe.Match(r.ReadToEnd());   // first "id" = the mod's own id (deps are key-value, not "id")
-                    if (m.Success) ids.Add(m.Groups[1].Value);
-                }
+                catch { /* skip an unreadable nested jar */ }
             }
         }
-        catch { /* ignore unreadable jars */ }
-        return ids;
+        catch { /* ignore */ }
+        return set;
     }
 
     // Platform / loader ids that are never user-managed jars (safety net for odd metadata).
     private static readonly HashSet<string> _ignoreModIds = new(StringComparer.OrdinalIgnoreCase)
-        { "minecraft", "forge", "neoforge", "fabricloader", "fabric", "java", "mixinextras", "mixin" };
+        { "minecraft", "forge", "neoforge", "fml", "fabricloader", "fabric", "java", "mixinextras", "mixin" };
 
     private static readonly Regex _depModRe   = new("^\\s*modId\\s*=\\s*\"([^\"]+)\"", RegexOptions.Compiled);
     private static readonly Regex _depTypeRe  = new("^\\s*type\\s*=\\s*\"([^\"]+)\"", RegexOptions.Compiled);
@@ -3825,14 +3915,21 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
         var enabledIds  = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);  // modId → file
         var disabledIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var owners      = new List<(string ownerId, string file, ModGraphInfo info)>();
+        // Every modId actually AVAILABLE to satisfy a dependency: each enabled jar's
+        // own id(s) PLUS ids bundled inside it (JarJar / nested jars). Using this set
+        // (not just top-level jar ids) is what stops the bogus "missing dependency"
+        // reports for libraries that ship embedded in another mod.
+        var available   = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var jar in Directory.EnumerateFiles(modsDir, "*.jar"))
         {
+            foreach (var nid in CollectNestedModIds(jar)) available.Add(nid);   // bundled libs count
             var info = ReadModGraphInfo(jar);
             if (info.OwnIds.Count == 0) continue;
             var primary = info.OwnIds[0];
             enabledIds[primary] = Path.GetFileName(jar)!;
             owners.Add((primary, Path.GetFileName(jar)!, info));
+            foreach (var oid in info.OwnIds) available.Add(oid);
         }
         foreach (var jar in Directory.EnumerateFiles(modsDir, "*.jar.disabled"))
         {
@@ -3848,7 +3945,7 @@ Rules: put a short human explanation BEFORE each @@ACTION line. Only propose an 
             foreach (var dep in info.Deps)
             {
                 if (_ignoreModIds.Contains(dep.Target)) continue;     // platform deps are always present
-                bool present  = enabledIds.ContainsKey(dep.Target);
+                bool present  = available.Contains(dep.Target);       // top-level OR JarJar-bundled
                 bool disabled = !present && disabledIds.ContainsKey(dep.Target);
 
                 if (present)
